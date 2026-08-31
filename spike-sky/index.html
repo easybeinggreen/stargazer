@@ -47,6 +47,19 @@
     width: 40px; height: 40px; border-radius: 50%; padding: 0; font-size: 18px; line-height: 40px;
     background: rgba(12,17,26,.82); border: 1px solid #29344a; }
   #toggleP.on { background: #2f5fce; border-color: #2f5fce; }
+  #capBtn { position: fixed; z-index: 5; left: 50%; transform: translateX(-50%);
+    bottom: calc(18px + env(safe-area-inset-bottom)); width: 62px; height: 62px; border-radius: 50%;
+    background: #6fe3b0; color: #04231a; font-size: 25px; line-height: 62px; padding: 0;
+    border: 3px solid rgba(255,255,255,.28); box-shadow: 0 3px 14px rgba(0,0,0,.4); }
+  #capBtn:active { filter: brightness(.9); }
+  #shot { position: fixed; inset: 0; z-index: 10; display: none; flex-direction: column;
+    align-items: center; justify-content: center; gap: 14px; padding: 20px;
+    background: rgba(4,6,10,.92); backdrop-filter: blur(4px); }
+  #shot img { max-width: 94vw; max-height: 74vh; border-radius: 10px; border: 1px solid #29344a; }
+  #shot .btns { display: flex; gap: 10px; }
+  #shot button { padding: 11px 18px; border-radius: 10px; }
+  #shot .prim { background: #6fe3b0; color: #051; border: 0; }
+  #shot .hint { font-size: 12px; color: #8a99b4; }
   a { color: #6fe3b0; }
 </style>
 <script type="importmap">
@@ -95,6 +108,17 @@
 
   <div id="hud">—</div>
   <div id="err"></div>
+  <button id="capBtn" title="capture">◉</button>
+
+  <div id="shot">
+    <img id="shotImg" alt="captured sky" />
+    <div class="btns">
+      <button class="prim" id="shotShare">Share</button>
+      <button id="shotSave">Save</button>
+      <button id="shotClose">Close</button>
+    </div>
+    <div class="hint" id="shotHint">long-press the image to save it too</div>
+  </div>
 
 <script src="./vendor/astronomy.browser.js"></script>
 <script type="module">
@@ -109,7 +133,7 @@ const errEl = $('err');
 const showErr = m => { errEl.textContent = m || ''; if (m) console.error(m); };
 
 // ---------- scene ----------
-const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setSize(innerWidth, innerHeight);
 document.body.appendChild(renderer.domElement);
@@ -272,13 +296,13 @@ function buildBodies() {
 
 // ---------- HTML labels ----------
 const labelLayer = $('labels');
-const labels = [];   // {el, get: ()=>Vector3|null, cls}
+const labels = [];   // {el, get: ()=>Vector3|null, cls, name}
 function mkLabel(text, cls, get) {
   const el = document.createElement('div');
   el.className = 'lbl ' + cls;
   el.innerHTML = (cls === 'card' ? '' : '<span class="dot">•</span> ') + text;
   labelLayer.appendChild(el);
-  labels.push({ el, get, cls });
+  labels.push({ el, get, cls, name: text });
 }
 function buildLabels() {
   for (const [name, az] of [['N',0],['E',90],['S',180],['W',270],['NE',45],['SE',135],['SW',225],['NW',315]]) {
@@ -565,6 +589,92 @@ $('fsBtn').addEventListener('click', async () => {
 document.addEventListener('fullscreenchange', () => {
   if (!document.fullscreenElement) { $('fsBtn').textContent = 'fullscreen ⤢'; $('fsBtn').classList.remove('on'); }
   setTimeout(fitViewport, 150);
+});
+
+// ---------- capture ----------
+let shotBlob = null, shotUrl = null;
+function captureShot() {
+  try {
+    const gl = renderer.domElement;
+    const W = gl.width, H = gl.height;
+    const dpr = renderer.getPixelRatio();
+    const cvs = document.createElement('canvas');
+    cvs.width = W; cvs.height = H;
+    const ctx = cvs.getContext('2d');
+
+    // base layer: camera feed (object-fit: cover) or the sky colour
+    const vid = $('cam');
+    if (state.camOn && vid.videoWidth) {
+      const vw = vid.videoWidth, vh = vid.videoHeight;
+      const s = Math.max(W / vw, H / vh);
+      ctx.drawImage(vid, (W - vw * s) / 2, (H - vh * s) / 2, vw * s, vh * s);
+    } else {
+      ctx.fillStyle = '#' + renderer.getClearColor(new THREE.Color()).getHexString();
+      ctx.fillRect(0, 0, W, H);
+    }
+
+    // sky layer: force a fresh render, then copy the WebGL buffer
+    renderer.render(scene, camera);
+    ctx.drawImage(gl, 0, 0, W, H);
+
+    // label layer
+    ctx.textBaseline = 'middle';
+    const colFor = c => c === 'card' ? '#7fd8b0' : c === 'planet' ? '#ffe0a3'
+      : c === 'moon' ? '#ffffff' : c === 'sun' ? '#ffd27a' : '#cfe0ff';
+    for (const L of labels) {
+      const wp = L.get(); if (!wp) continue;
+      _p.copy(wp).project(camera);
+      if (_p.z > 1 || Math.abs(_p.x) > 1 || Math.abs(_p.y) > 1) continue;
+      const x = (_p.x * 0.5 + 0.5) * W, y = (-_p.y * 0.5 + 0.5) * H;
+      ctx.font = `600 ${(L.cls === 'card' ? 13 : 11) * dpr}px system-ui, -apple-system, sans-serif`;
+      const tx = x + (L.cls === 'card' ? 0 : 7 * dpr);
+      if (L.cls === 'card') ctx.textAlign = 'center'; else ctx.textAlign = 'left';
+      ctx.lineWidth = 3 * dpr; ctx.strokeStyle = 'rgba(0,0,0,.85)';
+      ctx.strokeText(L.name, tx, y);
+      ctx.fillStyle = colFor(L.cls);
+      ctx.fillText(L.name, tx, y);
+    }
+    ctx.textAlign = 'left';
+
+    // caption strip
+    const bh = Math.max(40 * dpr, H * 0.055);
+    ctx.fillStyle = 'rgba(5,7,12,.6)';
+    ctx.fillRect(0, H - bh, W, bh);
+    const d = state.lastDate || new Date();
+    const when = d.toLocaleString(undefined, { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    ctx.fillStyle = '#e6ecf5';
+    ctx.font = `${12.5 * dpr}px system-ui, -apple-system, sans-serif`;
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`${when}  ·  ${state.lat.toFixed(3)}, ${state.lon.toFixed(3)}`, 12 * dpr, H - bh / 2);
+    ctx.textAlign = 'right'; ctx.fillStyle = '#6fe3b0';
+    ctx.fillText('✦ Stargazer', W - 12 * dpr, H - bh / 2);
+    ctx.textAlign = 'left';
+
+    cvs.toBlob(b => {
+      if (!b) { showErr('capture failed'); return; }
+      if (shotUrl) URL.revokeObjectURL(shotUrl);
+      shotBlob = b; shotUrl = URL.createObjectURL(b);
+      $('shotImg').src = shotUrl;
+      $('shot').style.display = 'flex';
+    }, 'image/png');
+  } catch (e) { showErr('capture: ' + e.message); }
+}
+$('capBtn').addEventListener('click', captureShot);
+$('shotClose').addEventListener('click', () => { $('shot').style.display = 'none'; });
+$('shotSave').addEventListener('click', () => {
+  const a = document.createElement('a');
+  a.href = shotUrl; a.download = `stargazer-${Date.now()}.png`;
+  document.body.appendChild(a); a.click(); a.remove();
+});
+$('shotShare').addEventListener('click', async () => {
+  if (!shotBlob) return;
+  const file = new File([shotBlob], `stargazer-${Date.now()}.png`, { type: 'image/png' });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file], title: 'My sky · Stargazer' }); }
+    catch (e) { /* user cancelled */ }
+  } else {
+    $('shotHint').textContent = 'sharing not available here — use Save, or long-press the image';
+  }
 });
 
 // ---------- boot ----------

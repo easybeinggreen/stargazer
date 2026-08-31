@@ -8,14 +8,13 @@ Target device: **Android (Samsung A35), Chrome.** Must be served over HTTPS for 
 
 ## Feasibility plan — burn down the risky unknowns, cheapest first
 
-| Phase | Question it answers | Effort | Go / no-go |
+| Phase | Question it answers | Status | Go / no-go |
 |---|---|---|---|
-| **1. Sensor spike** | Can this phone give a usable compass heading? | ½ day | heading within ~15° of a real compass outdoors after a figure-8; standing-still jitter < ~3°; ≥ 10 Hz; no runaway drift |
-| **2. Astronomy pipeline** | Does lat/lon + time → correct alt/az? | ½ day | Moon within ~1° of Stellarium Web; bright stars match |
-| **3. Static sky diorama (three.js)** | Is the artifact actually compelling? | 1 day | sky shapes match Stellarium **and** it looks good; panorama version registers to the real horizon |
-| **Decision point** | Has it got legs? | — | kill only if P1 is unfixably bad **and** P3 underwhelms |
-| **4. Live AR** | Can labels track the sky as you pan? (stretch) | 1 day | Moon label stays within ~10° while panning |
-| **5. Capture + share** | The thing you show the judges | ½ day | labelled PNG stamped with location + time |
+| **1. Sensor spike** | Can this phone give a usable compass heading? | ✅ **pass** | `deviceorientationabsolute` (`absolute:true`), 60 Hz while moving, heading tracks a compass app, GPS fix ±4 m |
+| **2. Astronomy pipeline** | Does lat/lon + time → correct alt/az? | ✅ **pass** | page's Rigel = independent recompute to 2 dp; Moon confirmed against the real sky |
+| **3. Sky diorama (three.js)** | Is it a real planetarium, and does it look good? | 🔨 **built, needs phone test** | sky matches reality for Brisbane; drag-look / phone-orientation / camera pass-through need on-device check |
+| **Decision point** | Has it got legs? | — | kill only if P3's phone-orientation mode is unusable **and** it underwhelms |
+| **4. Capture + share** | The thing you show the judges | next | labelled PNG / mini-diorama stamped with location + time, shareable by link |
 
 ## Phase 1 — `spike-sensors/`
 
@@ -30,9 +29,23 @@ Zero-build static page. Open it on the phone (see URL below), tap **Start sensor
 Test matrix: outdoors away from metal · indoors by a window · next to a laptop · phone upright aimed at the
 horizon then tipped up to the sky. Then **Copy diagnostics** and paste the JSON back.
 
+## Phase 3 — `spike-sky/`
+
+Zero-build three.js planetarium (ES module + importmap, all deps vendored):
+
+- `stars.json` — HYG v41 trimmed to mag ≤ 6 (5,070 stars, 347 named), coloured by B–V, sized by magnitude.
+- `constellations.lines.json` — d3-celestial western constellation figures.
+- of-date star coords computed once at load via `astronomy-engine` (precession/nutation/aberration);
+  a fast local-sidereal formula re-places them on every time change (~4 ms vs ~200 ms).
+- planets / Moon / Sun via `astronomy-engine` each frame-set; twilight sky colour + star fade driven by Sun altitude.
+- **look:** drag (default) · **phone** (device-orientation quaternion + a heading-nudge slider to correct the magnetometer) · **camera** pass-through toggle for real AR.
+- location + freeze/scrub time controls; HUD shows view az/alt and Moon/Saturn az/alt for a sanity check.
+
+Open on the phone, tap **Use location**, then **look: phone** and **camera: on**, point at the sky.
+
 ## Local dev
 
-Phase 1 is plain HTML — just open `spike-sensors/index.html`, or `npx serve .`. Later phases add Vite + three.js + `astronomy-engine`.
+Static — `npx serve .` then open the spike you want. No build step; deps are in each spike's `vendor/`.
 
 ## Deploy
 

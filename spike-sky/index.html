@@ -1,0 +1,532 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+<title>Stargazer · Phase 3 sky</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; overflow: hidden; background: #05060a;
+    font: 13px/1.4 -apple-system, system-ui, "Segoe UI", Roboto, sans-serif; color: #e6ecf5; }
+  #view { position: fixed; inset: 0; }
+  #cam { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: cover; display: none; z-index: 0; }
+  canvas { position: fixed; inset: 0; z-index: 1; touch-action: none; }
+  #labels { position: fixed; inset: 0; z-index: 2; pointer-events: none; overflow: hidden; }
+  .lbl { position: absolute; left: 0; top: 0; white-space: nowrap; transform: translate(-50%, -50%);
+    font-size: 11px; text-shadow: 0 0 3px #000, 0 0 6px #000; will-change: transform; }
+  .lbl.star { color: #cfe0ff; }
+  .lbl.planet { color: #ffe0a3; font-weight: 600; }
+  .lbl.moon { color: #fff; font-weight: 600; }
+  .lbl.sun { color: #ffd27a; font-weight: 700; }
+  .lbl.card { color: #7fd8b0; font-weight: 700; font-size: 13px; letter-spacing: .05em; }
+  .lbl .dot { opacity: .5; }
+
+  #panel { position: fixed; z-index: 4; left: 8px; right: 8px; top: 8px;
+    background: rgba(12,17,26,.86); backdrop-filter: blur(6px);
+    border: 1px solid #1f2a3d; border-radius: 12px; padding: 8px 10px; }
+  #panel.min { padding: 6px 10px; }
+  #panel .row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 5px; }
+  #panel .row + .row { margin-top: 6px; }
+  #panel.min .row.extra { display: none; }
+  button, input, select { font: inherit; border-radius: 8px; border: 1px solid #29344a;
+    background: #141b2a; color: #e6ecf5; padding: 7px 9px; }
+  button { font-weight: 600; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+  button.go { background: #6fe3b0; color: #051; border: 0; }
+  button.on { background: #2f5fce; border-color: #2f5fce; color: #fff; }
+  input[type=number] { width: 92px; }
+  input[type=datetime-local] { width: 190px; }
+  input[type=range] { width: 130px; padding: 0; }
+  label.chk { font-size: 12px; color: #9fb2d0; display: inline-flex; align-items: center; gap: 4px; }
+  #hud { position: fixed; z-index: 4; left: 10px; bottom: calc(10px + env(safe-area-inset-bottom));
+    font: 11px/1.4 ui-monospace, Consolas, monospace; color: #8fb0d8; text-shadow: 0 0 4px #000;
+    pointer-events: none; }
+  #err { position: fixed; z-index: 5; left: 8px; right: 8px; bottom: 8px; color: #ff9a9a;
+    font-size: 12px; text-shadow: 0 0 4px #000; }
+  #toggleP { position: fixed; z-index: 5; right: 12px; top: 12px; }
+  a { color: #6fe3b0; }
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "./vendor/three.module.min.js"
+} }
+</script>
+</head>
+<body>
+  <video id="cam" playsinline muted></video>
+  <div id="labels"></div>
+
+  <div id="panel">
+    <div class="row">
+      <button class="go" id="loc">Use location</button>
+      <input id="lat" type="number" step="0.0001" placeholder="lat" />
+      <input id="lon" type="number" step="0.0001" placeholder="lon" />
+      <button id="minBtn" title="collapse">–</button>
+    </div>
+    <div class="row extra">
+      <label class="chk"><input type="checkbox" id="freeze" /> freeze</label>
+      <input id="dt" type="datetime-local" step="1" />
+      <button id="now">now</button>
+    </div>
+    <div class="row extra">
+      <button id="mode">look: drag</button>
+      <button id="camBtn">camera: off</button>
+      <label class="chk"><input type="checkbox" id="lines" checked /> lines</label>
+      <label class="chk"><input type="checkbox" id="labs" checked /> labels</label>
+    </div>
+    <div class="row extra">
+      <span style="font-size:11px;color:#6b7a94">FOV</span>
+      <input id="fov" type="range" min="25" max="100" value="65" />
+      <span style="font-size:11px;color:#6b7a94">heading nudge</span>
+      <input id="nudge" type="range" min="-180" max="180" value="0" />
+      <button id="nudge0" title="reset nudge">0</button>
+    </div>
+  </div>
+
+  <div id="hud">—</div>
+  <div id="err"></div>
+
+<script src="./vendor/astronomy.browser.js"></script>
+<script type="module">
+import * as THREE from 'three';
+
+const A = window.Astronomy;
+const $ = id => document.getElementById(id);
+const DEG = Math.PI / 180, RAD = 180 / Math.PI;
+const R = 100;                       // celestial sphere radius (world units)
+const REF_OBS = new A.Observer(0, 0, 0);   // for star of-date conversion (parallax = 0 for stars)
+const errEl = $('err');
+const showErr = m => { errEl.textContent = m || ''; if (m) console.error(m); };
+
+// ---------- scene ----------
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(65, innerWidth / innerHeight, 0.1, 4000);
+camera.rotation.order = 'YXZ';
+
+// ---------- state ----------
+const state = {
+  lat: null, lon: null, elev: 40,
+  ofDate: null,          // Date the of-date star coords were computed for
+  useDevice: false, camOn: false, frozen: false,
+  yaw: Math.PI, pitch: 18 * DEG,   // start facing ~North, tilted up
+  nudge: 0,
+  showLines: true, showLabels: true,
+};
+
+// ---------- coordinate transform ----------
+// equatorial (RA deg of-date, Dec rad) + local sidereal time -> unit vector (E,up,N=-z)
+function eqToVec(raDeg, sinDec, cosDec, lstDeg, sinLat, cosLat, out) {
+  const H = (lstDeg - raDeg) * DEG;
+  const sinH = Math.sin(H), cosH = Math.cos(H);
+  const sinAlt = sinDec * sinLat + cosDec * cosLat * cosH;
+  const alt = Math.asin(Math.max(-1, Math.min(1, sinAlt)));
+  const az = Math.atan2(-cosDec * sinH, sinDec * cosLat - cosDec * sinLat * cosH); // from N, +E
+  const ca = Math.cos(alt);
+  out.set(R * ca * Math.sin(az), R * Math.sin(alt), -R * ca * Math.cos(az));
+  return alt;
+}
+function altAzToVec(altDeg, azDeg, out) {
+  const alt = altDeg * DEG, az = azDeg * DEG, ca = Math.cos(alt);
+  out.set(R * ca * Math.sin(az), R * Math.sin(alt), -R * ca * Math.cos(az));
+}
+function lstDegrees(date) { return (A.SiderealTime(date) * 15 + state.lon) % 360; }
+
+// ---------- star field ----------
+let starGeo, starMat, starPoints;
+let STAR = [];          // {raDeg, sinDec, cosDec, size, name, mag}
+const bvColor = (bv) => {
+  bv = (bv == null) ? 0.65 : Math.max(-0.35, Math.min(1.9, bv));
+  // crude but readable temperature ramp
+  if (bv < 0.0)  return [0.70, 0.80, 1.00];
+  if (bv < 0.30) return [0.86, 0.91, 1.00];
+  if (bv < 0.60) return [1.00, 1.00, 0.96];
+  if (bv < 1.00) return [1.00, 0.95, 0.82];
+  if (bv < 1.40) return [1.00, 0.86, 0.68];
+  return [1.00, 0.78, 0.60];
+};
+
+async function buildStars() {
+  const raw = await (await fetch('./stars.json')).json();
+  const now = new Date();
+  const n = raw.length;
+  const positions = new Float32Array(n * 3);
+  const colors = new Float32Array(n * 3);
+  const sizes = new Float32Array(n);
+  STAR = new Array(n);
+  const dpr = Math.min(devicePixelRatio, 2);
+  for (let i = 0; i < n; i++) {
+    const s = raw[i];
+    // of-date RA/Dec (bakes in precession/nutation/aberration) — once, at load
+    A.DefineStar(A.Body.Star1, s.r, s.d, 1000);
+    const eq = A.Equator(A.Body.Star1, now, REF_OBS, true, true);
+    const decR = eq.dec * DEG;
+    const [r, g, b] = bvColor(s.ci);
+    const size = Math.max(1, Math.min(15, (6.6 - s.m) * 1.7 + 1)) * dpr;
+    STAR[i] = { raDeg: eq.ra * 15, sinDec: Math.sin(decR), cosDec: Math.cos(decR), size, name: s.n, mag: s.m, con: s.c, bayer: s.b };
+    colors[i*3] = r; colors[i*3+1] = g; colors[i*3+2] = b;
+    sizes[i] = size;
+  }
+  starGeo = new THREE.BufferGeometry();
+  starGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  starGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  starGeo.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+  starMat = new THREE.ShaderMaterial({
+    uniforms: { uOpacity: { value: 1 } },
+    vertexShader: `
+      attribute float size; attribute vec3 color; varying vec3 vColor;
+      void main(){ vColor = color;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = size; }`,
+    fragmentShader: `
+      precision mediump float; varying vec3 vColor; uniform float uOpacity;
+      void main(){ float r = length(gl_PointCoord - vec2(0.5)) * 2.0;
+        float a = smoothstep(1.0, 0.15, r); if (a <= 0.01) discard;
+        gl_FragColor = vec4(vColor, a * uOpacity); }`,
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+  starPoints = new THREE.Points(starGeo, starMat);
+  starPoints.frustumCulled = false;
+  scene.add(starPoints);
+  state.ofDate = now;
+}
+
+// ---------- constellation lines ----------
+let conSeg, CON = [];   // flat list of {raDeg, sinDec, cosDec}
+async function buildLines() {
+  const gj = await (await fetch('./constellations.lines.json')).json();
+  const now = new Date();
+  const verts = [];      // pairs of indices into CON
+  for (const f of gj.features) {
+    for (const line of f.geometry.coordinates) {
+      for (let k = 0; k < line.length; k++) {
+        let [lon, lat] = line[k];
+        const raH = ((lon < 0 ? lon + 360 : lon)) / 15;
+        A.DefineStar(A.Body.Star1, raH, lat, 1000);
+        const eq = A.Equator(A.Body.Star1, now, REF_OBS, true, true);
+        const decR = eq.dec * DEG;
+        CON.push({ raDeg: eq.ra * 15, sinDec: Math.sin(decR), cosDec: Math.cos(decR) });
+        if (k > 0) { verts.push(CON.length - 2, CON.length - 1); }
+      }
+    }
+  }
+  const pos = new Float32Array(CON.length * 3);   // will hold per-vertex positions; use index buffer
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setIndex(verts);
+  const mat = new THREE.LineBasicMaterial({ color: 0x3b6ea5, transparent: true, opacity: 0.34 });
+  conSeg = new THREE.LineSegments(geo, mat);
+  conSeg.frustumCulled = false;
+  scene.add(conSeg);
+}
+
+// ---------- solar-system bodies ----------
+const BODIES = ['Sun', 'Moon', 'Mercury', 'Venus', 'Mars', 'Jupiter', 'Saturn', 'Uranus', 'Neptune'];
+const bodyMarks = {};
+function buildHorizon() {
+  const pts = [];
+  for (let a = 0; a <= 360; a += 2) { const v = new THREE.Vector3(); altAzToVec(0, a, v); pts.push(v); }
+  const ring = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
+    new THREE.LineBasicMaterial({ color: 0x6a8aa8, transparent: true, opacity: 0.55 }));
+  ring.frustumCulled = false; scene.add(ring);
+  const disc = new THREE.Mesh(new THREE.CircleGeometry(R * 0.99, 72),
+    new THREE.MeshBasicMaterial({ color: 0x090d13, transparent: true, opacity: 0.6, side: THREE.DoubleSide, depthWrite: false }));
+  disc.rotation.x = -Math.PI / 2; disc.position.y = -0.6; disc.renderOrder = -1;
+  scene.add(disc);
+}
+
+function buildBodies() {
+  for (const b of BODIES) {
+    const isSun = b === 'Sun', isMoon = b === 'Moon';
+    const col = isSun ? 0xffd27a : isMoon ? 0xffffff : 0xffe0a3;
+    const sz = isSun || isMoon ? 3.2 : 1.6;
+    const spr = new THREE.Sprite(new THREE.SpriteMaterial({ color: col, transparent: true, opacity: 0.95, depthWrite: false }));
+    spr.scale.set(sz, sz, 1);
+    scene.add(spr);
+    bodyMarks[b] = spr;
+  }
+}
+
+// ---------- HTML labels ----------
+const labelLayer = $('labels');
+const labels = [];   // {el, get: ()=>Vector3|null, cls}
+function mkLabel(text, cls, get) {
+  const el = document.createElement('div');
+  el.className = 'lbl ' + cls;
+  el.innerHTML = (cls === 'card' ? '' : '<span class="dot">•</span> ') + text;
+  labelLayer.appendChild(el);
+  labels.push({ el, get, cls });
+}
+function buildLabels() {
+  for (const [name, az] of [['N',0],['E',90],['S',180],['W',270],['NE',45],['SE',135],['SW',225],['NW',315]]) {
+    mkLabel(name, 'card', () => { const v = new THREE.Vector3(); altAzToVec(2.5, az, v); return v; });
+  }
+  for (const b of BODIES) mkLabel(b, b === 'Sun' ? 'sun' : b === 'Moon' ? 'moon' : 'planet',
+    () => bodyMarks[b].visible ? bodyMarks[b].position : null);
+  // bright named stars
+  const tmp = STAR.map((s, i) => ({ s, i })).filter(o => o.s.name && o.s.mag < 2.6)
+    .sort((a, b) => a.s.mag - b.s.mag).slice(0, 90);
+  for (const { i } of tmp) mkLabel(STAR[i].name, 'star', () => starVec(i));
+}
+const _sv = new THREE.Vector3();
+let _lst = 0, _sinLat = 0, _cosLat = 1;
+function starVec(i) {
+  const s = STAR[i];
+  const alt = eqToVec(s.raDeg, s.sinDec, s.cosDec, _lst, _sinLat, _cosLat, _sv);
+  return alt > -1 ? _sv : null;
+}
+
+// ---------- recompute positions for a given time ----------
+function recompute(date) {
+  if (state.lat == null) return;
+  // refresh of-date coords if the date drifted a lot (months) from when we precessed
+  if (state.ofDate && Math.abs(date - state.ofDate) > 40 * 864e5) reprecess(date);
+
+  _lst = lstDegrees(date);
+  _sinLat = Math.sin(state.lat * DEG); _cosLat = Math.cos(state.lat * DEG);
+
+  // stars — below-horizon points parked out of the frustum
+  const pos = starGeo.attributes.position.array;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < STAR.length; i++) {
+    const s = STAR[i];
+    const alt = eqToVec(s.raDeg, s.sinDec, s.cosDec, _lst, _sinLat, _cosLat, v);
+    if (alt < -1.5) { pos[i*3] = 0; pos[i*3+1] = -99999; pos[i*3+2] = 0; }
+    else { pos[i*3] = v.x; pos[i*3+1] = v.y; pos[i*3+2] = v.z; }
+  }
+  starGeo.attributes.position.needsUpdate = true;
+
+  // constellation lines
+  if (conSeg) {
+    const cp = conSeg.geometry.attributes.position.array;
+    for (let i = 0; i < CON.length; i++) {
+      const c = CON[i];
+      eqToVec(c.raDeg, c.sinDec, c.cosDec, _lst, _sinLat, _cosLat, v);
+      cp[i*3] = v.x; cp[i*3+1] = v.y; cp[i*3+2] = v.z;
+    }
+    conSeg.geometry.attributes.position.needsUpdate = true;
+  }
+
+  // bodies (accurate)
+  const obs = new A.Observer(state.lat, state.lon, state.elev);
+  let sunAlt = -90;
+  for (const b of BODIES) {
+    try {
+      const eq = A.Equator(A.Body[b], date, obs, true, true);
+      const h = A.Horizon(date, obs, eq.ra, eq.dec, 'normal');
+      altAzToVec(h.altitude, h.azimuth, bodyMarks[b].position);
+      bodyMarks[b].visible = h.altitude > -2 && !(b === 'Sun');   // keep Sun sprite hidden, still drives sky colour
+      if (b === 'Sun') sunAlt = h.altitude;
+      bodyMarks[b]._alt = h.altitude; bodyMarks[b]._az = h.azimuth;
+    } catch (e) { bodyMarks[b].visible = false; }
+  }
+  applySky(sunAlt);
+  state.lastDate = date;
+}
+
+function reprecess(date) {
+  // Of-date star coords are computed once at load. Precession drift over a session (even months)
+  // is < ~0.05°, well below the magnetometer error that dominates AR. Just move the marker.
+  state.ofDate = date;
+}
+
+// ---------- sky colour ----------
+const cNight = new THREE.Color(0x05060a), cAstro = new THREE.Color(0x070c16),
+      cNaut = new THREE.Color(0x0d1a2b), cCivil = new THREE.Color(0x24405f), cDay = new THREE.Color(0x6f9fd8);
+const _c = new THREE.Color();
+function lerpC(a, b, t) { return _c.copy(a).lerp(b, Math.max(0, Math.min(1, t))); }
+function applySky(sunAlt) {
+  let col;
+  if (sunAlt >= 0) col = cDay;
+  else if (sunAlt > -6) col = lerpC(cCivil, cDay, (sunAlt + 6) / 6).clone();
+  else if (sunAlt > -12) col = lerpC(cNaut, cCivil, (sunAlt + 12) / 6).clone();
+  else if (sunAlt > -18) col = lerpC(cAstro, cNaut, (sunAlt + 18) / 6).clone();
+  else col = cNight;
+  if (!state.camOn) renderer.setClearColor(col, 1); else renderer.setClearColor(0x000000, 0);
+  const starVis = Math.max(0, Math.min(1, (-sunAlt - 4) / 9));
+  starMat.uniforms.uOpacity.value = state.camOn ? Math.max(starVis, 0.85) : starVis;
+  if (conSeg) conSeg.material.opacity = 0.34 * (state.camOn ? 1 : (0.25 + 0.75 * starVis));
+}
+
+// ---------- device orientation ----------
+const _zee = new THREE.Vector3(0, 0, 1);
+const _euler = new THREE.Euler();
+const _q0 = new THREE.Quaternion();
+const _q1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5));
+let devOri = null;
+function onDevOri(e) { if (e.alpha != null) devOri = e; }
+function applyDevice() {
+  if (!devOri) return;
+  const alpha = devOri.alpha * DEG, beta = (devOri.beta || 0) * DEG, gamma = (devOri.gamma || 0) * DEG;
+  const orient = ((screen.orientation && screen.orientation.angle) || 0) * DEG;
+  _euler.set(beta, alpha, -gamma, 'YXZ');
+  camera.quaternion.setFromEuler(_euler);
+  camera.quaternion.multiply(_q1);
+  camera.quaternion.multiply(_q0.setFromAxisAngle(_zee, -orient));
+  // heading nudge (yaw about world up) to correct magnetometer offset
+  camera.quaternion.premultiply(_q0.setFromAxisAngle(new THREE.Vector3(0,1,0), state.nudge * DEG));
+}
+
+// ---------- drag look ----------
+let dragging = false, lastX = 0, lastY = 0;
+renderer.domElement.addEventListener('pointerdown', e => { if (state.useDevice) return; dragging = true; lastX = e.clientX; lastY = e.clientY; });
+addEventListener('pointerup', () => dragging = false);
+addEventListener('pointermove', e => {
+  if (!dragging) return;
+  const k = (camera.fov / 65) * 0.0022;
+  state.yaw   -= (e.clientX - lastX) * k;
+  state.pitch += (e.clientY - lastY) * k;
+  state.pitch = Math.max(-85 * DEG, Math.min(85 * DEG, state.pitch));
+  lastX = e.clientX; lastY = e.clientY;
+});
+// pinch / wheel zoom
+addEventListener('wheel', e => { setFov(camera.fov + Math.sign(e.deltaY) * 3); }, { passive: true });
+let pinchD = 0;
+renderer.domElement.addEventListener('touchmove', e => {
+  if (e.touches.length === 2) {
+    const d = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+    if (pinchD) setFov(camera.fov * (pinchD / d));
+    pinchD = d;
+  }
+}, { passive: true });
+renderer.domElement.addEventListener('touchend', () => pinchD = 0);
+function setFov(f) { camera.fov = Math.max(20, Math.min(110, f)); camera.updateProjectionMatrix(); $('fov').value = Math.round(camera.fov); }
+
+// ---------- render loop ----------
+const _p = new THREE.Vector3();
+function frame() {
+  requestAnimationFrame(frame);
+  if (state.useDevice) applyDevice();
+  else { camera.rotation.y = state.yaw; camera.rotation.x = state.pitch; camera.rotation.z = 0; }
+  renderer.render(scene, camera);
+  renderHud();
+
+  // labels
+  if (!state.showLabels) { for (const L of labels) L.el.style.display = 'none'; }
+  else {
+    const W = innerWidth, H = innerHeight;
+    for (const L of labels) {
+      const wp = L.get();
+      if (!wp) { L.el.style.display = 'none'; continue; }
+      _p.copy(wp).project(camera);
+      if (_p.z > 1 || _p.x < -1.05 || _p.x > 1.05 || _p.y < -1.05 || _p.y > 1.05) { L.el.style.display = 'none'; continue; }
+      L.el.style.display = 'block';
+      L.el.style.transform = `translate(${(_p.x*0.5+0.5)*W}px, ${(-_p.y*0.5+0.5)*H}px) translate(-50%,-50%)`;
+    }
+  }
+}
+
+function viewAzAlt() {
+  const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+  const alt = Math.asin(Math.max(-1, Math.min(1, dir.y))) * RAD;
+  let az = Math.atan2(dir.x, -dir.z) * RAD; if (az < 0) az += 360;
+  return { az, alt };
+}
+function renderHud() {
+  if (state.lat == null) return;
+  const va = viewAzAlt();
+  const m = bodyMarks.Moon, s = bodyMarks.Saturn;
+  const d = state.lastDate || new Date();
+  $('hud').innerHTML =
+    `${state.lat.toFixed(3)}, ${state.lon.toFixed(3)} · ${d.toISOString().slice(0,19)}Z` +
+    (state.frozen ? ' (frozen)' : '') + `<br>` +
+    `view az ${va.az.toFixed(0)}° alt ${va.alt.toFixed(0)}° · fov ${camera.fov.toFixed(0)}°` +
+    (m && m._alt > -5 ? `<br>Moon az ${m._az.toFixed(1)}° alt ${m._alt.toFixed(1)}°` : '') +
+    (s && s._alt > -5 ? ` · Saturn az ${s._az.toFixed(1)}° alt ${s._alt.toFixed(1)}°` : '');
+}
+
+// ---------- time control ----------
+function curDate() { return (state.frozen && $('dt').value) ? new Date($('dt').value) : new Date(); }
+function setDtNow() { const d = new Date(Date.now() - new Date().getTimezoneOffset()*60000); $('dt').value = d.toISOString().slice(0,19); }
+let tick = 0;
+setInterval(() => { if (state.lat != null && (!state.frozen)) recompute(curDate()); }, 1000);
+
+// ---------- UI wiring ----------
+$('loc').addEventListener('click', () => {
+  $('loc').textContent = 'locating…';
+  navigator.geolocation.getCurrentPosition(p => {
+    setLoc(p.coords.latitude, p.coords.longitude, p.coords.altitude || 40);
+    $('loc').textContent = `±${Math.round(p.coords.accuracy)}m`;
+  }, e => { $('loc').textContent = 'failed'; showErr('location: ' + e.message + ' — type lat/lon'); },
+     { enableHighAccuracy: true, timeout: 15000 });
+});
+function setLoc(la, lo, el) {
+  state.lat = la; state.lon = lo; state.elev = el || 40;
+  $('lat').value = la.toFixed(4); $('lon').value = lo.toFixed(4);
+  recompute(curDate());
+}
+$('lat').addEventListener('change', () => { const la = parseFloat($('lat').value), lo = parseFloat($('lon').value); if (isFinite(la) && isFinite(lo)) setLoc(la, lo, state.elev); });
+$('lon').addEventListener('change', () => { const la = parseFloat($('lat').value), lo = parseFloat($('lon').value); if (isFinite(la) && isFinite(lo)) setLoc(la, lo, state.elev); });
+$('freeze').addEventListener('change', e => { state.frozen = e.target.checked; if (state.frozen && !$('dt').value) setDtNow(); recompute(curDate()); });
+$('dt').addEventListener('change', () => recompute(curDate()));
+$('now').addEventListener('click', () => { setDtNow(); recompute(curDate()); });
+$('fov').addEventListener('input', e => setFov(+e.target.value));
+$('nudge').addEventListener('input', e => state.nudge = +e.target.value);
+$('nudge0').addEventListener('click', () => { state.nudge = 0; $('nudge').value = 0; });
+$('lines').addEventListener('change', e => { state.showLines = e.target.checked; if (conSeg) conSeg.visible = e.target.checked; });
+$('labs').addEventListener('change', e => state.showLabels = e.target.checked);
+$('minBtn').addEventListener('click', () => { $('panel').classList.toggle('min'); $('minBtn').textContent = $('panel').classList.contains('min') ? '+' : '–'; });
+
+$('mode').addEventListener('click', async () => {
+  if (!state.useDevice) {
+    try {
+      if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+        const r = await DeviceOrientationEvent.requestPermission(); if (r !== 'granted') { showErr('orientation permission denied'); return; }
+      }
+    } catch (e) {}
+    addEventListener('deviceorientationabsolute', onDevOri, true);
+    addEventListener('deviceorientation', onDevOri, true);
+    state.useDevice = true; $('mode').textContent = 'look: phone'; $('mode').classList.add('on');
+  } else {
+    state.useDevice = false; $('mode').textContent = 'look: drag'; $('mode').classList.remove('on');
+  }
+});
+
+$('camBtn').addEventListener('click', async () => {
+  const v = $('cam');
+  if (!state.camOn) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
+      v.srcObject = stream; await v.play(); v.style.display = 'block';
+      state.camOn = true; $('camBtn').textContent = 'camera: on'; $('camBtn').classList.add('on');
+      recompute(curDate());
+    } catch (e) { showErr('camera: ' + e.message); }
+  } else {
+    const t = v.srcObject; if (t) t.getTracks().forEach(x => x.stop());
+    v.srcObject = null; v.style.display = 'none';
+    state.camOn = false; $('camBtn').textContent = 'camera: off'; $('camBtn').classList.remove('on');
+    recompute(curDate());
+  }
+});
+
+addEventListener('resize', () => {
+  renderer.setSize(innerWidth, innerHeight);
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+});
+
+// ---------- boot ----------
+(async function boot() {
+  try {
+    buildHorizon();
+    buildBodies();
+    await buildStars();
+    await buildLines();
+    buildLabels();
+    setDtNow();
+    // seed a location so there's something on screen before geolocation
+    setLoc(-27.4835, 153.0019, 40);
+    $('loc').textContent = 'Use location';
+    frame();
+    // auto-try geolocation
+    navigator.geolocation.getCurrentPosition(
+      p => setLoc(p.coords.latitude, p.coords.longitude, p.coords.altitude || 40),
+      () => {}, { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 });
+  } catch (e) { showErr('boot: ' + ((e && (e.stack || e.message)) || String(e))); }
+})();
+</script>
+</body>
+</html>

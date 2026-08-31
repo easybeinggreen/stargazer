@@ -64,7 +64,7 @@
 </style>
 </head>
 <body>
-  <h1>Stargazer — Phase 1: can this phone point?</h1>
+  <h1>Stargazer — Phase 1: can this phone point? <span style="color:#4d5b74;font-weight:400;font-size:11px">build p1-v3</span></h1>
   <div class="sub">Goal: heading within ~15&deg; of a real compass outdoors, jitter &lt; 3&deg;, &ge; 10&nbsp;Hz, no drift.</div>
 
   <div class="row">
@@ -148,14 +148,18 @@
     if (el.textContent.length > 6000) el.textContent = el.textContent.slice(0, 6000);
   };
 
+  const BUILD = 'p1-v3';
   const state = {
+    build: BUILD,
     source: null, absolute: null, lastEvent: 0,
     headings: [],           // {t, h}
     rateStamps: [],         // timestamps
     markHeading: null, markTime: null,
     last: {},               // last raw event values
     screenAngle: 0,
-    geo: null,
+    geo: null, geoError: null,
+    peakHz: 0,              // highest 1s event count ever seen
+    peakHzMoving: 0,        // highest 1s event count while the heading was changing
     ua: navigator.userAgent,
   };
 
@@ -206,6 +210,15 @@
     state.headings.push({ t: now, h: heading });
     while (state.headings.length && now - state.headings[0].t > 1000) state.headings.shift();
 
+    // peak rate, and peak rate while actually moving (>~8 deg/s of heading change in the window)
+    const hz = state.rateStamps.length;
+    state.peakHz = Math.max(state.peakHz, hz);
+    if (state.headings.length > 2) {
+      const first = state.headings[0].h, last = state.headings[state.headings.length - 1].h;
+      let swing = Math.abs(last - first) % 360; if (swing > 180) swing = 360 - swing;
+      if (swing > 8) state.peakHzMoving = Math.max(state.peakHzMoving, hz);
+    }
+
     render(heading, rec);
   }
 
@@ -216,7 +229,8 @@
     $('bg').textContent = (rec.beta == null ? '--' : rec.beta.toFixed(0)) + ' / ' +
       (rec.gamma == null ? '--' : rec.gamma.toFixed(0));
 
-    $('hz').innerHTML = state.rateStamps.length + '<small>Hz</small>';
+    $('hz').innerHTML = state.rateStamps.length + '<small>Hz · peak ' + state.peakHz +
+      (state.peakHzMoving ? ' · moving ' + state.peakHzMoving : '') + '</small>';
 
     // jitter = peak-to-peak of headings in the last second, handling wrap
     if (state.headings.length > 2) {
@@ -261,6 +275,7 @@
     };
     const fail = (err, phase) => {
       const names = { 1: 'PERMISSION_DENIED', 2: 'POSITION_UNAVAILABLE', 3: 'TIMEOUT' };
+      state.geoError = phase + ': ' + (names[err.code] || err.code) + ' — ' + err.message;
       log('geo ' + phase + ' [' + (names[err.code] || err.code) + ']:', err.message);
       if (!done) $('geo').innerHTML = '<span class="bad">' + (names[err.code] || 'error') +
         '</span> — turn on OS Location / Google Location Accuracy, or just type lat/lon on the Phase 2 page';
@@ -317,15 +332,19 @@
   $('copy').addEventListener('click', async () => {
     const hs = state.headings.map(x => x.h);
     const diag = {
+      build: state.build,
       when: new Date().toISOString(),
       userAgent: state.ua,
       screenAngle: state.screenAngle,
       source: state.source,
       absoluteFlag: state.absolute,
       rateHz: state.rateStamps.length,
+      peakHz: state.peakHz,
+      peakHzWhileMoving: state.peakHzMoving,
       lastRaw: state.last,
       headingSampleCount: hs.length,
       geo: state.geo,
+      geoError: state.geoError,
       note: '',
     };
     const text = JSON.stringify(diag, null, 2);

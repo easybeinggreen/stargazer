@@ -129,9 +129,12 @@
   </div>
 
   <div class="hint">
-    Test: (1) outdoors, away from cars/buildings, compare to a compass app &mdash; do a figure-8 first.
-    (2) indoors near a window. (3) next to a laptop. (4) hold phone upright, aimed at the horizon, then tip up to the sky.
-    Watch whether the heading is roughly right and how much it wobbles. Then hit <b>Copy diagnostics</b> and paste it back to me.
+    <b>Heading:</b> wave a figure-8 to calibrate, then compare to a compass app &mdash; outdoors, indoors, next to the laptop.<br>
+    <b>Update rate:</b> Android throttles the sensor when the phone is <i>still</i> (that's the "settled low"). The number that
+    matters is Hz while you <i>slowly pan</i> the phone across the room &mdash; want ~15+ for smooth live AR.<br>
+    <b>Drift test:</b> aim at a fixed mark, tap <i>Mark heading</i>, set the phone down untouched for 1&ndash;2&nbsp;min,
+    then read <i>Drift since mark</i>. Small (&lt;5&deg;) = stable compass; large = it wanders and we'd correct for it.<br>
+    Then <b>Copy diagnostics</b> and paste it back.
   </div>
 
   <pre id="log">log —</pre>
@@ -245,6 +248,29 @@
       `translate(calc(-50% + ${gx * 45}%), calc(-50% + ${by * 45}%))`;
   }
 
+  function startGeo() {
+    if (!('geolocation' in navigator)) { $('geo').innerHTML = '<span class="bad">no geolocation API</span>'; return; }
+    $('geo').textContent = 'requesting… (indoors this can take 20–30 s)';
+    let done = false;
+    const ok = (p) => {
+      done = true;
+      const c = p.coords;
+      state.geo = { lat: c.latitude, lon: c.longitude, acc: c.accuracy, alt: c.altitude, altAcc: c.altitudeAccuracy };
+      $('geo').innerHTML = `<span class="good">${c.latitude.toFixed(5)}, ${c.longitude.toFixed(5)}</span> ±${Math.round(c.accuracy)}m · alt ${c.altitude == null ? 'n/a' : Math.round(c.altitude) + 'm'}`;
+      log('geo fix ±' + Math.round(c.accuracy) + 'm');
+    };
+    const fail = (err, phase) => {
+      const names = { 1: 'PERMISSION_DENIED', 2: 'POSITION_UNAVAILABLE', 3: 'TIMEOUT' };
+      log('geo ' + phase + ' [' + (names[err.code] || err.code) + ']:', err.message);
+      if (!done) $('geo').innerHTML = '<span class="bad">' + (names[err.code] || 'error') +
+        '</span> — turn on OS Location / Google Location Accuracy, or just type lat/lon on the Phase 2 page';
+    };
+    // fast network fix first, then a high-accuracy watch
+    navigator.geolocation.getCurrentPosition(ok, e => fail(e, 'quick'), { enableHighAccuracy: false, timeout: 12000, maximumAge: 60000 });
+    const id = navigator.geolocation.watchPosition(ok, e => fail(e, 'watch'), { enableHighAccuracy: true, timeout: 27000, maximumAge: 0 });
+    setTimeout(() => navigator.geolocation.clearWatch(id), 60000);
+  }
+
   async function start() {
     $('start').disabled = true;
     log('starting…', 'screen.angle=' + ((screen.orientation && screen.orientation.angle) ?? window.orientation ?? '?'));
@@ -276,17 +302,7 @@
     usePlain();
     setTimeout(() => { if (!got && !state.source) { $('src').innerHTML = '<span class="bad">no orientation events — sensor blocked or unsupported</span>'; log('NO EVENTS after 1.5s'); } }, 1500);
 
-    // geolocation (needs HTTPS)
-    $('geo').textContent = 'requesting…';
-    navigator.geolocation.getCurrentPosition(
-      (p) => {
-        state.geo = { lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy, alt: p.coords.altitude, altAcc: p.coords.altitudeAccuracy };
-        $('geo').textContent = `${p.coords.latitude.toFixed(5)}, ${p.coords.longitude.toFixed(5)}  ±${Math.round(p.coords.accuracy)}m  alt ${p.coords.altitude == null ? 'n/a' : Math.round(p.coords.altitude) + 'm'}`;
-        log('geo ok ±' + Math.round(p.coords.accuracy) + 'm');
-      },
-      (err) => { $('geo').innerHTML = '<span class="bad">' + err.message + '</span>'; log('geo error:', err.message); },
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-    );
+    startGeo();
 
     screen.orientation && screen.orientation.addEventListener('change', () => log('screen orientation ->', screen.orientation.angle));
   }

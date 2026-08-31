@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Stargazer · Phase 1 sensor spike</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font: 15px/1.4 -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+    background: #0a0d14; color: #e6ecf5;
+    padding: 14px calc(14px + env(safe-area-inset-right)) 40px calc(14px + env(safe-area-inset-left));
+    -webkit-text-size-adjust: 100%;
+  }
+  h1 { font-size: 16px; font-weight: 650; letter-spacing: .01em; }
+  .sub { color: #7f8da2; font-size: 12px; margin: 2px 0 14px; }
+  button {
+    font: inherit; font-weight: 600; color: #051; background: #6fe3b0;
+    border: 0; border-radius: 10px; padding: 12px 16px; margin: 4px 6px 4px 0;
+    cursor: pointer; -webkit-tap-highlight-color: transparent;
+  }
+  button.secondary { background: #1d2637; color: #cfe0ff; }
+  button:active { filter: brightness(.9); }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 12px 0; }
+  .card {
+    background: #121826; border: 1px solid #1f2a3d; border-radius: 12px;
+    padding: 10px 12px;
+  }
+  .card .label { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: #6b7a94; }
+  .card .value { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .card .value small { font-size: 12px; font-weight: 500; color: #8a99b4; }
+  .wide { grid-column: 1 / -1; }
+  .good { color: #6fe3b0; } .bad { color: #ff8a8a; } .warn { color: #ffcf7a; }
+  .rose {
+    grid-column: 1 / -1; display: grid; grid-template-columns: 120px 1fr; gap: 12px; align-items: center;
+  }
+  .dial { position: relative; width: 120px; height: 120px; }
+  .dial svg { width: 100%; height: 100%; display: block; }
+  .needle { transform-box: fill-box; transform-origin: 50% 50%; transition: transform .06s linear; }
+  .level {
+    position: relative; width: 100%; aspect-ratio: 2 / 1; background: #0c111b;
+    border: 1px solid #1f2a3d; border-radius: 10px; overflow: hidden;
+  }
+  .bubble {
+    position: absolute; width: 22px; height: 22px; border-radius: 50%;
+    background: radial-gradient(circle at 35% 35%, #9ff0c8, #3bbf88);
+    left: 50%; top: 50%; transform: translate(-50%,-50%); transition: transform .06s linear;
+  }
+  .level .cross { position: absolute; inset: 0; }
+  .level .cross::before, .level .cross::after {
+    content: ""; position: absolute; background: #1f2a3d;
+  }
+  .level .cross::before { left: 50%; top: 0; bottom: 0; width: 1px; }
+  .level .cross::after { top: 50%; left: 0; right: 0; height: 1px; }
+  pre#log {
+    background: #0c111b; border: 1px solid #1f2a3d; border-radius: 10px;
+    padding: 10px; font: 11px/1.35 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    color: #9fb2d0; max-height: 34vh; overflow: auto; white-space: pre-wrap; word-break: break-word;
+  }
+  .row { display: flex; flex-wrap: wrap; align-items: center; }
+  .hint { font-size: 12px; color: #8a99b4; margin: 10px 0; }
+  a { color: #6fe3b0; }
+</style>
+</head>
+<body>
+  <h1>Stargazer — Phase 1: can this phone point?</h1>
+  <div class="sub">Goal: heading within ~15&deg; of a real compass outdoors, jitter &lt; 3&deg;, &ge; 10&nbsp;Hz, no drift.</div>
+
+  <div class="row">
+    <button id="start">Start sensors</button>
+    <button id="mark" class="secondary">Mark heading (drift test)</button>
+    <button id="copy" class="secondary">Copy diagnostics</button>
+  </div>
+
+  <div class="grid">
+    <div class="rose">
+      <div class="dial">
+        <svg viewBox="0 0 100 100" aria-hidden="true">
+          <circle cx="50" cy="50" r="47" fill="#0c111b" stroke="#1f2a3d"/>
+          <text x="50" y="14" text-anchor="middle" fill="#6b7a94" font-size="10">N</text>
+          <text x="50" y="92" text-anchor="middle" fill="#6b7a94" font-size="10">S</text>
+          <text x="90" y="53" text-anchor="middle" fill="#6b7a94" font-size="10">E</text>
+          <text x="10" y="53" text-anchor="middle" fill="#6b7a94" font-size="10">W</text>
+          <g class="needle" id="needle">
+            <polygon points="50,10 45,52 55,52" fill="#ff6b6b"/>
+            <polygon points="50,90 45,48 55,48" fill="#8a99b4"/>
+          </g>
+        </svg>
+      </div>
+      <div class="level" title="tilt — bubble centres when phone is flat">
+        <div class="cross"></div>
+        <div class="bubble" id="bubble"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="label">Compass heading</div>
+      <div class="value" id="heading">--<small>&deg; tilt-comp</small></div>
+    </div>
+    <div class="card">
+      <div class="label">Raw alpha</div>
+      <div class="value" id="alpha">--<small>&deg;</small></div>
+    </div>
+    <div class="card">
+      <div class="label">Update rate</div>
+      <div class="value" id="hz">--<small>Hz</small></div>
+    </div>
+    <div class="card">
+      <div class="label">Jitter (1s)</div>
+      <div class="value" id="jitter">--<small>&deg; p-p</small></div>
+    </div>
+    <div class="card">
+      <div class="label">Drift since mark</div>
+      <div class="value" id="drift">--<small>&deg;</small></div>
+    </div>
+    <div class="card">
+      <div class="label">Beta / Gamma</div>
+      <div class="value" id="bg" style="font-size:18px">-- / --</div>
+    </div>
+    <div class="card wide">
+      <div class="label">Event source</div>
+      <div class="value" id="src" style="font-size:15px; font-weight:600">not started</div>
+    </div>
+    <div class="card wide">
+      <div class="label">Location</div>
+      <div class="value" id="geo" style="font-size:15px; font-weight:600">not requested</div>
+    </div>
+  </div>
+
+  <div class="hint">
+    Test: (1) outdoors, away from cars/buildings, compare to a compass app &mdash; do a figure-8 first.
+    (2) indoors near a window. (3) next to a laptop. (4) hold phone upright, aimed at the horizon, then tip up to the sky.
+    Watch whether the heading is roughly right and how much it wobbles. Then hit <b>Copy diagnostics</b> and paste it back to me.
+  </div>
+
+  <pre id="log">log —</pre>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const log = (...a) => {
+    const el = $('log');
+    el.textContent = a.join(' ') + '\n' + el.textContent;
+    if (el.textContent.length > 6000) el.textContent = el.textContent.slice(0, 6000);
+  };
+
+  const state = {
+    source: null, absolute: null, lastEvent: 0,
+    headings: [],           // {t, h}
+    rateStamps: [],         // timestamps
+    markHeading: null, markTime: null,
+    last: {},               // last raw event values
+    screenAngle: 0,
+    geo: null,
+    ua: navigator.userAgent,
+  };
+
+  // Tilt-compensated compass heading (W3C / common implementation), then screen-orientation corrected.
+  function compassHeading(alpha, beta, gamma) {
+    const d2r = Math.PI / 180;
+    const _x = (beta || 0) * d2r, _y = (gamma || 0) * d2r, _z = (alpha || 0) * d2r;
+    const cX = Math.cos(_x), cY = Math.cos(_y), cZ = Math.cos(_z);
+    const sX = Math.sin(_x), sY = Math.sin(_y), sZ = Math.sin(_z);
+    const Vx = -cZ * sY - sZ * sX * cY;
+    const Vy = -sZ * sY + cZ * sX * cY;
+    let heading = Math.atan2(Vx, Vy) / d2r;
+    if (heading < 0) heading += 360;
+    // undo screen rotation so "top edge of the phone" stays the aim point
+    heading = (heading + state.screenAngle) % 360;
+    return heading;
+  }
+
+  function angDiff(a, b) {
+    let d = Math.abs(a - b) % 360;
+    return d > 180 ? 360 - d : d;
+  }
+
+  function onOrientation(e) {
+    const now = performance.now();
+    state.lastEvent = now;
+    if (state.absolute === null) state.absolute = !!e.absolute;
+    state.screenAngle = (screen.orientation && screen.orientation.angle) || window.orientation || 0;
+
+    const rec = {
+      alpha: e.alpha, beta: e.beta, gamma: e.gamma,
+      absolute: e.absolute,
+      webkitCompassHeading: (typeof e.webkitCompassHeading === 'number') ? e.webkitCompassHeading : null,
+      webkitCompassAccuracy: (typeof e.webkitCompassAccuracy === 'number') ? e.webkitCompassAccuracy : null,
+    };
+    state.last = rec;
+
+    let heading;
+    if (rec.webkitCompassHeading != null) heading = rec.webkitCompassHeading;          // iOS
+    else if (rec.alpha != null) heading = compassHeading(rec.alpha, rec.beta, rec.gamma); // Android absolute
+    else return;
+
+    // rate
+    state.rateStamps.push(now);
+    while (state.rateStamps.length && now - state.rateStamps[0] > 1000) state.rateStamps.shift();
+
+    // jitter window
+    state.headings.push({ t: now, h: heading });
+    while (state.headings.length && now - state.headings[0].t > 1000) state.headings.shift();
+
+    render(heading, rec);
+  }
+
+  function render(heading, rec) {
+    $('heading').innerHTML = heading.toFixed(1) + '<small>&deg; ' +
+      (rec.webkitCompassHeading != null ? 'iOS compass' : 'tilt-comp') + '</small>';
+    $('alpha').innerHTML = (rec.alpha == null ? '--' : rec.alpha.toFixed(1)) + '<small>&deg;</small>';
+    $('bg').textContent = (rec.beta == null ? '--' : rec.beta.toFixed(0)) + ' / ' +
+      (rec.gamma == null ? '--' : rec.gamma.toFixed(0));
+
+    $('hz').innerHTML = state.rateStamps.length + '<small>Hz</small>';
+
+    // jitter = peak-to-peak of headings in the last second, handling wrap
+    if (state.headings.length > 2) {
+      const ref = state.headings[0].h;
+      const rel = state.headings.map(x => {
+        let d = x.h - ref;
+        if (d > 180) d -= 360; if (d < -180) d += 360;
+        return d;
+      });
+      const pp = Math.max(...rel) - Math.min(...rel);
+      const j = $('jitter');
+      j.innerHTML = pp.toFixed(1) + '<small>&deg; p-p</small>';
+      j.className = 'value ' + (pp < 3 ? 'good' : pp < 8 ? 'warn' : 'bad');
+    }
+
+    if (state.markHeading != null) {
+      const drift = angDiff(heading, state.markHeading);
+      const secs = ((performance.now() - state.markTime) / 1000).toFixed(0);
+      const d = $('drift');
+      d.innerHTML = drift.toFixed(1) + '<small>&deg; / ' + secs + 's</small>';
+      d.className = 'value ' + (drift < 5 ? 'good' : drift < 15 ? 'warn' : 'bad');
+    }
+
+    $('needle').style.transform = `rotate(${-heading}deg)`;
+    // bubble: gamma is left/right tilt, beta is front/back; clamp to +/-45deg -> +/-45% of half-box
+    const gx = Math.max(-45, Math.min(45, rec.gamma || 0)) / 45;
+    const by = Math.max(-45, Math.min(45, rec.beta || 0)) / 45;
+    $('bubble').style.transform =
+      `translate(calc(-50% + ${gx * 45}%), calc(-50% + ${by * 45}%))`;
+  }
+
+  async function start() {
+    $('start').disabled = true;
+    log('starting…', 'screen.angle=' + ((screen.orientation && screen.orientation.angle) ?? window.orientation ?? '?'));
+
+    // iOS 13+ gate (harmless on Android)
+    try {
+      if (typeof DeviceOrientationEvent !== 'undefined' &&
+          typeof DeviceOrientationEvent.requestPermission === 'function') {
+        const res = await DeviceOrientationEvent.requestPermission();
+        log('DeviceOrientation permission:', res);
+        if (res !== 'granted') { log('DENIED — orientation unavailable'); }
+      }
+    } catch (err) { log('requestPermission error:', err.message); }
+
+    // Prefer the Earth-frame (absolute) event on Android
+    let got = false;
+    const useAbs = () => {
+      window.addEventListener('deviceorientationabsolute', (e) => { got = true; state.source = 'deviceorientationabsolute'; $('src').textContent = 'deviceorientationabsolute (abs=' + e.absolute + ')'; onOrientation(e); }, { passive: true });
+    };
+    const usePlain = () => {
+      window.addEventListener('deviceorientation', (e) => {
+        if (state.source === 'deviceorientationabsolute') return;
+        state.source = 'deviceorientation';
+        $('src').textContent = 'deviceorientation (abs=' + e.absolute + ')' + (e.absolute ? '' : ' — RELATIVE, heading unreliable');
+        onOrientation(e);
+      }, { passive: true });
+    };
+    if ('ondeviceorientationabsolute' in window) useAbs();
+    usePlain();
+    setTimeout(() => { if (!got && !state.source) { $('src').innerHTML = '<span class="bad">no orientation events — sensor blocked or unsupported</span>'; log('NO EVENTS after 1.5s'); } }, 1500);
+
+    // geolocation (needs HTTPS)
+    $('geo').textContent = 'requesting…';
+    navigator.geolocation.getCurrentPosition(
+      (p) => {
+        state.geo = { lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy, alt: p.coords.altitude, altAcc: p.coords.altitudeAccuracy };
+        $('geo').textContent = `${p.coords.latitude.toFixed(5)}, ${p.coords.longitude.toFixed(5)}  ±${Math.round(p.coords.accuracy)}m  alt ${p.coords.altitude == null ? 'n/a' : Math.round(p.coords.altitude) + 'm'}`;
+        log('geo ok ±' + Math.round(p.coords.accuracy) + 'm');
+      },
+      (err) => { $('geo').innerHTML = '<span class="bad">' + err.message + '</span>'; log('geo error:', err.message); },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+    );
+
+    screen.orientation && screen.orientation.addEventListener('change', () => log('screen orientation ->', screen.orientation.angle));
+  }
+
+  $('start').addEventListener('click', start);
+  $('mark').addEventListener('click', () => {
+    if (!state.headings.length) return log('no heading yet');
+    state.markHeading = state.headings[state.headings.length - 1].h;
+    state.markTime = performance.now();
+    log('marked heading', state.markHeading.toFixed(1));
+  });
+  $('copy').addEventListener('click', async () => {
+    const hs = state.headings.map(x => x.h);
+    const diag = {
+      when: new Date().toISOString(),
+      userAgent: state.ua,
+      screenAngle: state.screenAngle,
+      source: state.source,
+      absoluteFlag: state.absolute,
+      rateHz: state.rateStamps.length,
+      lastRaw: state.last,
+      headingSampleCount: hs.length,
+      geo: state.geo,
+      note: '',
+    };
+    const text = JSON.stringify(diag, null, 2);
+    try { await navigator.clipboard.writeText(text); log('diagnostics copied to clipboard'); }
+    catch { $('log').textContent = text + '\n' + $('log').textContent; log('(clipboard blocked — copy from log above)'); }
+  });
+
+  log('ready. tap "Start sensors".',
+      'secure context =', String(window.isSecureContext),
+      '| absolute-event =', String('ondeviceorientationabsolute' in window));
+})();
+</script>
+</body>
+</html>

@@ -86,7 +86,7 @@
       <button id="now">now</button>
     </div>
     <div class="row extra">
-      <button id="mode">look: drag</button>
+      <button id="mode">view: manual ⇄</button>
       <button id="camBtn">camera: off</button>
       <button id="fsBtn">fullscreen ⤢</button>
       <label class="chk"><input type="checkbox" id="lines" checked /> lines</label>
@@ -542,9 +542,9 @@ $('mode').addEventListener('click', async () => {
     } catch (e) {}
     addEventListener('deviceorientationabsolute', onDevOriAbs, true);
     addEventListener('deviceorientation', onDevOriRel, true);
-    state.useDevice = true; $('mode').textContent = 'look: phone'; $('mode').classList.add('on');
+    state.useDevice = true; $('mode').textContent = 'view: auto ⇄'; $('mode').classList.add('on');
   } else {
-    state.useDevice = false; $('mode').textContent = 'look: drag'; $('mode').classList.remove('on');
+    state.useDevice = false; $('mode').textContent = 'view: manual ⇄'; $('mode').classList.remove('on');
   }
 });
 

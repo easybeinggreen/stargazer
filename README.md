@@ -12,9 +12,10 @@ Target device: **Android (Samsung A35), Chrome.** Must be served over HTTPS for 
 |---|---|---|---|
 | **1. Sensor spike** | Can this phone give a usable compass heading? | ✅ **pass** | `deviceorientationabsolute` (`absolute:true`), 60 Hz while moving, heading tracks a compass app, GPS fix ±4 m |
 | **2. Astronomy pipeline** | Does lat/lon + time → correct alt/az? | ✅ **pass** | page's Rigel = independent recompute to 2 dp; Moon confirmed against the real sky |
-| **3. Sky diorama (three.js)** | Is it a real planetarium, and does it look good? | 🔨 **built, needs phone test** | sky matches reality for Brisbane; drag-look / phone-orientation / camera pass-through need on-device check |
-| **Decision point** | Has it got legs? | — | kill only if P3's phone-orientation mode is unusable **and** it underwhelms |
-| **4. Capture + share** | The thing you show the judges | next | labelled PNG / mini-diorama stamped with location + time, shareable by link |
+| **3. Sky diorama (three.js)** | Is it a real planetarium, and does it look good? | ✅ **pass** | drag-look + brightness + collapsible UI confirmed on the A35; orientation-flicker fixed (dual-listener); night/AR check still pending |
+| **Decision point** | Has it got legs? | ✅ **yes** | building out, not killing |
+| **4. Capture + share** | The thing you show the judges | 🔨 **built, needs phone test** | ◉ button composites camera/sky + labels + caption → PNG; Share (Android share sheet) / Save / long-press fallback |
+| tuning backlog | — | later | night/AR verification, label declutter, constellation boundary regions, place-name in caption, richer "pannable link" share |
 
 ## Phase 1 — `spike-sensors/`
 

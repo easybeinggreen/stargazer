@@ -23,12 +23,12 @@
   .lbl .dot { opacity: .5; }
 
   #panel { position: fixed; z-index: 4; left: 8px; right: 8px; top: 8px;
-    background: rgba(12,17,26,.86); backdrop-filter: blur(6px);
-    border: 1px solid #1f2a3d; border-radius: 12px; padding: 8px 10px; }
-  #panel.min { padding: 6px 10px; }
+    background: rgba(12,17,26,.92); backdrop-filter: blur(6px);
+    border: 1px solid #1f2a3d; border-radius: 12px; padding: 8px 10px;
+    max-height: 82vh; overflow-y: auto; overscroll-behavior: contain; }
+  #panel.hidden { display: none; }
   #panel .row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 5px; }
   #panel .row + .row { margin-top: 6px; }
-  #panel.min .row.extra { display: none; }
   button, input, select { font: inherit; border-radius: 8px; border: 1px solid #29344a;
     background: #141b2a; color: #e6ecf5; padding: 7px 9px; }
   button { font-weight: 600; cursor: pointer; -webkit-tap-highlight-color: transparent; }
@@ -43,7 +43,10 @@
     pointer-events: none; }
   #err { position: fixed; z-index: 5; left: 8px; right: 8px; bottom: 8px; color: #ff9a9a;
     font-size: 12px; text-shadow: 0 0 4px #000; }
-  #toggleP { position: fixed; z-index: 5; right: 12px; top: 12px; }
+  #toggleP { position: fixed; z-index: 6; right: 10px; top: calc(10px + env(safe-area-inset-top));
+    width: 40px; height: 40px; border-radius: 50%; padding: 0; font-size: 18px; line-height: 40px;
+    background: rgba(12,17,26,.82); border: 1px solid #29344a; }
+  #toggleP.on { background: #2f5fce; border-color: #2f5fce; }
   a { color: #6fe3b0; }
 </style>
 <script type="importmap">
@@ -55,13 +58,14 @@
 <body>
   <video id="cam" playsinline muted></video>
   <div id="labels"></div>
+  <button id="toggleP" title="settings">⚙</button>
 
   <div id="panel">
     <div class="row">
       <button class="go" id="loc">Use location</button>
       <input id="lat" type="number" step="0.0001" placeholder="lat" />
       <input id="lon" type="number" step="0.0001" placeholder="lon" />
-      <button id="minBtn" title="collapse">–</button>
+      <button id="closeP" title="close">✕</button>
     </div>
     <div class="row extra">
       <label class="chk"><input type="checkbox" id="freeze" /> freeze</label>
@@ -71,6 +75,7 @@
     <div class="row extra">
       <button id="mode">look: drag</button>
       <button id="camBtn">camera: off</button>
+      <button id="fsBtn">fullscreen ⤢</button>
       <label class="chk"><input type="checkbox" id="lines" checked /> lines</label>
       <label class="chk"><input type="checkbox" id="labs" checked /> labels</label>
     </div>
@@ -492,7 +497,17 @@ $('nudge').addEventListener('input', e => { state.nudge = +e.target.value; $('nu
 $('nudge0').addEventListener('click', () => { state.nudge = 0; $('nudge').value = 0; $('nudgeVal').textContent = '0°'; });
 $('lines').addEventListener('change', e => { state.showLines = e.target.checked; if (conSeg) conSeg.visible = e.target.checked; });
 $('labs').addEventListener('change', e => state.showLabels = e.target.checked);
-$('minBtn').addEventListener('click', () => { $('panel').classList.toggle('min'); $('minBtn').textContent = $('panel').classList.contains('min') ? '+' : '–'; });
+function setPanel(open) {
+  $('panel').classList.toggle('hidden', !open);
+  $('toggleP').classList.toggle('on', open);
+}
+$('toggleP').addEventListener('click', () => setPanel($('panel').classList.contains('hidden')));
+$('closeP').addEventListener('click', () => setPanel(false));
+// touching the sky tucks the panel out of the way
+renderer.domElement.addEventListener('pointerdown', () => {
+  if (!$('panel').classList.contains('hidden')) setPanel(false);
+});
+setPanel(true);   // start open so the controls are discoverable; first sky-tap hides it
 
 $('mode').addEventListener('click', async () => {
   if (!state.useDevice) {
@@ -526,9 +541,30 @@ $('camBtn').addEventListener('click', async () => {
   }
 });
 
-addEventListener('resize', () => {
+function fitViewport() {
   renderer.setSize(innerWidth, innerHeight);
   camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+}
+addEventListener('resize', fitViewport);
+addEventListener('orientationchange', () => setTimeout(fitViewport, 120));
+
+$('fsBtn').addEventListener('click', async () => {
+  try {
+    if (!document.fullscreenElement) {
+      await document.documentElement.requestFullscreen();
+      try { await screen.orientation.lock('landscape'); } catch (e) {}
+      $('fsBtn').textContent = 'exit ⤡'; $('fsBtn').classList.add('on');
+    } else {
+      try { screen.orientation.unlock(); } catch (e) {}
+      await document.exitFullscreen();
+      $('fsBtn').textContent = 'fullscreen ⤢'; $('fsBtn').classList.remove('on');
+    }
+    setTimeout(fitViewport, 150);
+  } catch (e) { showErr('fullscreen: ' + e.message); }
+});
+document.addEventListener('fullscreenchange', () => {
+  if (!document.fullscreenElement) { $('fsBtn').textContent = 'fullscreen ⤢'; $('fsBtn').classList.remove('on'); }
+  setTimeout(fitViewport, 150);
 });
 
 // ---------- boot ----------

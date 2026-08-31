@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Stargazer · Phase 2 astronomy pipeline</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font: 14px/1.4 -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+         background: #0a0d14; color: #e6ecf5; padding: 14px 12px 48px; }
+  h1 { font-size: 16px; font-weight: 650; }
+  .sub { color: #7f8da2; font-size: 12px; margin: 2px 0 12px; }
+  button, input, select {
+    font: inherit; border-radius: 9px; border: 1px solid #29344a;
+    background: #141b2a; color: #e6ecf5; padding: 9px 11px; margin: 3px 5px 3px 0;
+  }
+  button { font-weight: 600; background: #6fe3b0; color: #051; border: 0; cursor: pointer; }
+  button.sec { background: #1d2637; color: #cfe0ff; }
+  .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 4px; }
+  .meta { font-size: 12px; color: #8a99b4; margin: 10px 0 6px; font-variant-numeric: tabular-nums; }
+  .meta b { color: #cfe0ff; font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 6px 7px; border-bottom: 1px solid #17202f; white-space: nowrap; }
+  th { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: #6b7a94; position: sticky; top: 0; background: #0a0d14; }
+  td.name, th.name { text-align: left; font-weight: 600; }
+  tr.up td { color: #e6ecf5; }
+  tr.down td { color: #4d5b74; }
+  tr.sun td.name { color: #ffd27a; }
+  tr.moon td.name { color: #cfe0ff; }
+  tr.planet td.name { color: #9ff0c8; }
+  .pill { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 999px;
+          background: #1d2637; color: #9fb2d0; margin-left: 6px; }
+  .hint { font-size: 12px; color: #8a99b4; margin: 14px 0; }
+  a { color: #6fe3b0; }
+  .wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; margin-top: 6px; }
+</style>
+</head>
+<body>
+  <h1>Stargazer — Phase 2: is the sky math right?</h1>
+  <div class="sub">alt/az for Sun, Moon, planets &amp; bright stars, computed locally with astronomy-engine.
+     Check the Moon &amp; a couple of planets against a reference app — want &lt; ~1&deg;.</div>
+
+  <div class="bar">
+    <button id="loc">Use my location</button>
+    <input id="lat" type="number" step="0.0001" placeholder="lat" style="width:104px" />
+    <input id="lon" type="number" step="0.0001" placeholder="lon" style="width:104px" />
+    <input id="elev" type="number" step="1" value="0" placeholder="elev m" style="width:78px" />
+  </div>
+  <div class="bar">
+    <label style="font-size:12px;color:#8a99b4">
+      <input type="checkbox" id="freeze" style="margin:0 4px 0 0;padding:0;width:auto" /> freeze time
+    </label>
+    <input id="dt" type="datetime-local" step="1" />
+    <button class="sec" id="now">now</button>
+  </div>
+
+  <div class="meta" id="meta">—</div>
+
+  <div class="wrap">
+    <table>
+      <thead><tr>
+        <th class="name">Object</th><th>Alt</th><th>Az</th><th>Dir</th>
+        <th>Constellation</th><th>Mag</th><th class="name">Notes</th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+
+  <div class="hint">
+    <b>How to validate:</b> set <i>freeze time</i> to a round value, then open a reference for the
+    same lat/lon/time and compare Alt/Az for the Moon, Venus and Jupiter:
+    <a href="https://stellarium-web.org/" target="_blank" rel="noopener">Stellarium&nbsp;Web</a> ·
+    <a href="https://in-the-sky.org/skymap2.php" target="_blank" rel="noopener">in-the-sky.org</a>.
+    Azimuth is measured from North, clockwise (0=N, 90=E, 180=S, 270=W).
+  </div>
+
+<script src="./vendor/astronomy.browser.js"></script>
+<script>
+(() => {
+  const A = window.Astronomy;
+  const $ = id => document.getElementById(id);
+
+  // J2000 bright stars: name, RA hours, Dec deg, visual mag, distance ly
+  const STARS = [
+    ["Sirius",6.7525,-16.716,-1.46,8.6],["Canopus",6.3992,-52.696,-0.74,310],
+    ["Rigil Kent. (α Cen)",14.6600,-60.834,-0.27,4.4],["Arcturus",14.2610,19.182,-0.05,37],
+    ["Vega",18.6156,38.784,0.03,25],["Capella",5.2782,45.998,0.08,43],
+    ["Rigel",5.2423,-8.202,0.13,860],["Procyon",7.6550,5.225,0.34,11.5],
+    ["Achernar",1.6286,-57.237,0.46,139],["Betelgeuse",5.9195,7.407,0.50,640],
+    ["Hadar (β Cen)",14.0637,-60.373,0.61,390],["Altair",19.8464,8.868,0.76,17],
+    ["Acrux (α Cru)",12.4433,-63.099,0.76,320],["Aldebaran",4.5987,16.509,0.86,65],
+    ["Antares",16.4901,-26.432,1.06,550],["Spica",13.4199,-11.161,1.04,250],
+    ["Pollux",7.7553,28.026,1.14,34],["Fomalhaut",22.9608,-29.622,1.16,25],
+    ["Deneb",20.6905,45.280,1.25,1400],["Mimosa (β Cru)",12.7953,-59.689,1.25,280],
+    ["Regulus",10.1395,11.967,1.35,79],["Adhara",6.9770,-28.972,1.50,430],
+    ["Castor",7.5766,31.888,1.58,51],["Gacrux (γ Cru)",12.5194,-57.113,1.63,88],
+    ["Shaula",17.5601,-37.104,1.62,570],["Bellatrix",5.4189,6.350,1.64,250],
+    ["Elnath",5.4382,28.608,1.65,130],["Alnilam",5.6036,-1.202,1.69,2000],
+    ["Alnair",22.1372,-46.961,1.74,100],["Miaplacidus",9.2200,-69.717,1.68,110],
+  ];
+  const PLANETS = ["Mercury","Venus","Mars","Jupiter","Saturn","Uranus","Neptune"];
+  const COMPASS16 = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"];
+  const dir16 = az => COMPASS16[Math.round(((az % 360) / 22.5)) % 16];
+
+  let observer = null;
+
+  function setDTLocalNow() {
+    const d = new Date(Date.now() - new Date().getTimezoneOffset() * 60000);
+    $('dt').value = d.toISOString().slice(0, 19);
+  }
+
+  function currentDate() {
+    if ($('freeze').checked && $('dt').value) return new Date($('dt').value);
+    return new Date();
+  }
+
+  function row(name, cls, date) {
+    let equ_ofdate, equ_j2000, extra = "", mag = "";
+    try {
+      if (name === "Star") throw 0;
+      const body = A.Body[name];
+      equ_ofdate = A.Equator(body, date, observer, true, true);
+      equ_j2000 = A.Equator(body, date, observer, false, true);
+      if (name !== "Sun" && name !== "Moon") {
+        try { const il = A.Illumination(body, date); mag = il.mag.toFixed(1); } catch {}
+      }
+      if (name === "Moon") {
+        const ph = A.MoonPhase(date);
+        const il = A.Illumination(A.Body.Moon, date);
+        extra = `${(il.phase_fraction * 100).toFixed(0)}% lit · phase ${ph.toFixed(0)}°`;
+        mag = il.mag.toFixed(1);
+      }
+      if (name === "Sun") {
+        extra = "";
+        mag = "−26.7";
+      }
+    } catch { return null; }
+    const hor = A.Horizon(date, observer, equ_ofdate.ra, equ_ofdate.dec, "normal");
+    const con = A.Constellation(equ_j2000.ra, equ_j2000.dec);
+    return {
+      name, cls,
+      alt: hor.altitude, az: hor.azimuth,
+      con: con.symbol, mag, extra,
+    };
+  }
+
+  function starRow(s, date) {
+    const [name, ra, dec, mag] = s;
+    A.DefineStar(A.Body.Star1, ra, dec, s[4] || 1000);
+    const equ = A.Equator(A.Body.Star1, date, observer, true, true);
+    const hor = A.Horizon(date, observer, equ.ra, equ.dec, "normal");
+    const con = A.Constellation(ra, dec);
+    return { name, cls: "star", alt: hor.altitude, az: hor.azimuth, con: con.symbol, mag: mag.toFixed(2), extra: "" };
+  }
+
+  function lst(date) {
+    // Greenwich apparent sidereal time -> local, in hours
+    const gast = A.SiderealTime(date);
+    let h = (gast + observer.longitude / 15) % 24;
+    if (h < 0) h += 24;
+    return h;
+  }
+
+  function render() {
+    if (!observer) { $('meta').textContent = "Set a location to begin."; return; }
+    const date = currentDate();
+    const out = [];
+    out.push(row("Sun", "sun", date));
+    out.push(row("Moon", "moon", date));
+    for (const p of PLANETS) out.push(row(p, "planet", date));
+    for (const s of STARS) out.push(starRow(s, date));
+
+    const rows = out.filter(Boolean).sort((a, b) => b.alt - a.alt);
+    const up = rows.filter(r => r.alt > 0).length;
+    const h = lst(date);
+    const hh = Math.floor(h), mm = Math.floor((h - hh) * 60), ss = Math.round((((h - hh) * 60) - mm) * 60);
+
+    $('meta').innerHTML =
+      `<b>${observer.latitude.toFixed(4)}, ${observer.longitude.toFixed(4)}</b> @ ${observer.height}m` +
+      ` &nbsp;·&nbsp; <b>${date.toISOString().replace('T', ' ').slice(0, 19)}Z</b>` +
+      ` &nbsp;·&nbsp; local sidereal <b>${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}</b>` +
+      ` &nbsp;·&nbsp; <b>${up}</b> of ${rows.length} above horizon`;
+
+    $('rows').innerHTML = rows.map(r => `
+      <tr class="${r.alt > 0 ? 'up' : 'down'} ${r.cls}">
+        <td class="name">${r.name}</td>
+        <td>${r.alt.toFixed(2)}°</td>
+        <td>${((r.az % 360 + 360) % 360).toFixed(2)}°</td>
+        <td>${dir16(r.az)}</td>
+        <td>${r.con}</td>
+        <td>${r.mag}</td>
+        <td class="name" style="font-weight:400;color:#8a99b4">${r.extra}</td>
+      </tr>`).join('');
+  }
+
+  function applyManual() {
+    const la = parseFloat($('lat').value), lo = parseFloat($('lon').value), el = parseFloat($('elev').value) || 0;
+    if (Number.isFinite(la) && Number.isFinite(lo)) { observer = new A.Observer(la, lo, el); render(); }
+  }
+
+  $('loc').addEventListener('click', () => {
+    $('loc').textContent = "locating…";
+    navigator.geolocation.getCurrentPosition(
+      p => {
+        $('lat').value = p.coords.latitude.toFixed(4);
+        $('lon').value = p.coords.longitude.toFixed(4);
+        $('elev').value = Math.round(p.coords.altitude || 0);
+        observer = new A.Observer(p.coords.latitude, p.coords.longitude, p.coords.altitude || 0);
+        $('loc').textContent = `±${Math.round(p.coords.accuracy)}m`;
+        render();
+      },
+      e => { $('loc').textContent = "location failed"; alert(e.message); },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  });
+  ['lat', 'lon', 'elev'].forEach(id => $(id).addEventListener('change', applyManual));
+  $('now').addEventListener('click', () => { setDTLocalNow(); render(); });
+  $('freeze').addEventListener('change', render);
+  $('dt').addEventListener('change', render);
+
+  setDTLocalNow();
+  setInterval(() => { if (!$('freeze').checked) render(); }, 1000);
+  $('meta').textContent = "astronomy-engine loaded. Set a location.";
+})();
+</script>
+</body>
+</html>

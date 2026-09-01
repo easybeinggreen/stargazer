@@ -52,6 +52,10 @@
     background: #6fe3b0; color: #04231a; font-size: 25px; line-height: 62px; padding: 0;
     border: 3px solid rgba(255,255,255,.28); box-shadow: 0 3px 14px rgba(0,0,0,.4); }
   #capBtn:active { filter: brightness(.9); }
+  #lockBtn { position: fixed; z-index: 5; right: 14px; bottom: calc(30px + env(safe-area-inset-bottom));
+    padding: 9px 13px; border-radius: 20px; font-size: 13px;
+    background: rgba(12,17,26,.82); border: 1px solid #29344a; }
+  #lockBtn.on { background: #2f5fce; border-color: #2f5fce; }
   #shot { position: fixed; inset: 0; z-index: 10; display: none; flex-direction: column;
     align-items: center; justify-content: center; gap: 14px; padding: 20px;
     background: rgba(4,6,10,.92); backdrop-filter: blur(4px); }
@@ -109,6 +113,7 @@
   <div id="hud">—</div>
   <div id="err"></div>
   <button id="capBtn" title="capture">◉</button>
+  <button id="lockBtn" title="lock onto the Moon or a bright planet in the camera view">🌙 lock</button>
 
   <div id="shot">
     <img id="shotImg" alt="captured sky" />
@@ -477,6 +482,68 @@ function alignToTap(px, py) {
   corrQ.premultiply(rq);
   toast(`✓ aligned to ${best.name}  (${(sep * RAD).toFixed(1)}° correction)`);
 }
+
+// ---------- camera-image lock: find the Moon / a bright planet in the video and snap to it ----------
+const _scan = document.createElement('canvas');
+const _pl = new THREE.Vector3();
+function lockToImage() {
+  if (!state.camOn) { toast('turn the camera on first (camera: on)'); return; }
+  if (!state.useDevice) { toast('switch to view: auto first'); return; }
+  const vid = $('cam');
+  if (!vid.videoWidth) { toast('camera not ready yet'); return; }
+
+  // choose the brightest predicted body that is up and inside the frame
+  let target = null;
+  for (const name of ['Moon', 'Venus', 'Jupiter', 'Mars', 'Saturn']) {
+    const m = bodyMarks[name];
+    if (!m || !m.visible) continue;
+    _pl.copy(m.position).project(camera);
+    if (_pl.z < 1 && Math.abs(_pl.x) < 0.92 && Math.abs(_pl.y) < 0.92) {
+      target = { name, dir: m.position.clone().normalize(), ndc: _pl.clone() };
+      break;
+    }
+  }
+  if (!target) { toast('point roughly at the Moon or a bright planet first'); return; }
+
+  // draw the frame into a small canvas at screen aspect + cover crop (px map linearly to screen)
+  const SW = 320, SH = Math.max(2, Math.round(320 * innerHeight / innerWidth));
+  _scan.width = SW; _scan.height = SH;
+  const sc = _scan.getContext('2d', { willReadFrequently: true });
+  const vw = vid.videoWidth, vh = vid.videoHeight, s = Math.max(SW / vw, SH / vh);
+  sc.drawImage(vid, (SW - vw * s) / 2, (SH - vh * s) / 2, vw * s, vh * s);
+  const px = sc.getImageData(0, 0, SW, SH).data;
+  const lum = i => px[i] * 0.299 + px[i + 1] * 0.587 + px[i + 2] * 0.114;
+
+  // brightest pixel within a search box around the predicted position
+  const cx = (target.ndc.x * 0.5 + 0.5) * SW, cy = (-target.ndc.y * 0.5 + 0.5) * SH;
+  const rad = Math.round(SW * 0.17);
+  let maxL = -1, mx = cx, my = cy;
+  for (let y = Math.max(0, cy - rad | 0); y < Math.min(SH, cy + rad); y++)
+    for (let x = Math.max(0, cx - rad | 0); x < Math.min(SW, cx + rad); x++) {
+      const L = lum((y * SW + x) * 4);
+      if (L > maxL) { maxL = L; mx = x; my = y; }
+    }
+  if (maxL < 45) { toast(`can't spot a bright ${target.name} — try a darker sky`); return; }
+
+  // luminance-weighted centroid of the blob around that peak
+  const thr = maxL * 0.72, br = Math.round(SW * 0.05);
+  let sx = 0, sy = 0, sw2 = 0;
+  for (let y = Math.max(0, my - br); y < Math.min(SH, my + br); y++)
+    for (let x = Math.max(0, mx - br); x < Math.min(SW, mx + br); x++) {
+      const L = lum((y * SW + x) * 4);
+      if (L >= thr) { const w = L - thr; sx += x * w; sy += y * w; sw2 += w; }
+    }
+  const bx = sw2 ? sx / sw2 : mx, by = sw2 ? sy / sw2 : my;
+
+  // blob pixel -> world ray -> correction that carries the marker onto it
+  _v2.set((bx / SW) * 2 - 1, -((by / SH) * 2 - 1));
+  _rc.setFromCamera(_v2, camera);
+  const blobDir = _rc.ray.direction.clone().normalize();
+  corrQ.premultiply(new THREE.Quaternion().setFromUnitVectors(blobDir, target.dir));
+  toast(`🌙 locked on ${target.name}`);
+}
+$('lockBtn').addEventListener('click', lockToImage);
+
 function setFov(f) { camera.fov = Math.max(20, Math.min(110, f)); camera.updateProjectionMatrix(); $('fov').value = Math.round(camera.fov); }
 
 // ---------- render loop ----------
@@ -632,6 +699,9 @@ document.addEventListener('fullscreenchange', () => {
 let shotBlob = null, shotUrl = null;
 function captureShot() {
   try {
+    if (innerHeight > innerWidth && !document.fullscreenElement) {
+      toast('tip: tap fullscreen ⤢ for a landscape shot');
+    }
     const gl = renderer.domElement;
     const W = gl.width, H = gl.height;
     const dpr = renderer.getPixelRatio();

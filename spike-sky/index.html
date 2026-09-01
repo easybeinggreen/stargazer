@@ -445,6 +445,38 @@ renderer.domElement.addEventListener('touchmove', e => {
   }
 }, { passive: true });
 renderer.domElement.addEventListener('touchend', () => pinchD = 0);
+
+// ---------- tap to align (auto mode): tap the real bright object -> correct heading ----------
+const _rc = new THREE.Raycaster();
+const _v2 = new THREE.Vector2();
+let tapDown = null;
+renderer.domElement.addEventListener('pointerdown', e => { tapDown = { x: e.clientX, y: e.clientY, t: performance.now() }; });
+renderer.domElement.addEventListener('pointerup', e => {
+  const d = tapDown; tapDown = null;
+  if (!d || !state.useDevice) return;
+  if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > 14 || performance.now() - d.t > 450) return; // was a drag
+  alignToTap(e.clientX, e.clientY);
+});
+const azOf = v => Math.atan2(v.x, -v.z);   // world azimuth, roll-independent
+let toastT = 0;
+function toast(m) { showErr(m); clearTimeout(toastT); toastT = setTimeout(() => showErr(''), 2600); }
+function alignToTap(px, py) {
+  _v2.set((px / innerWidth) * 2 - 1, -(py / innerHeight) * 2 + 1);
+  _rc.setFromCamera(_v2, camera);
+  const tapDir = _rc.ray.direction;
+  const cands = [];
+  for (const b of BODIES) if (bodyMarks[b].visible) cands.push({ name: b, dir: bodyMarks[b].position.clone().normalize(), w: 1 });
+  for (const L of labels) { if (L.cls !== 'star') continue; const wp = L.get(); if (wp) cands.push({ name: L.name, dir: wp.clone().normalize(), w: 1.4 }); }
+  let best = null, bestScore = 1e9;
+  for (const c of cands) { const s = c.dir.angleTo(tapDir) * c.w; if (s < bestScore) { bestScore = s; best = c; } }
+  if (!best || best.dir.angleTo(tapDir) > 14 * DEG) { toast('tap right on a labelled star or planet'); return; }
+  let dAz = (azOf(tapDir) - azOf(best.dir)) * RAD;
+  dAz = ((dAz + 540) % 360) - 180;
+  state.nudge = (((state.nudge + dAz) + 540) % 360) - 180;
+  $('nudge').value = Math.round(state.nudge);
+  $('nudgeVal').textContent = Math.round(state.nudge) + '°';
+  toast(`✓ aligned to ${best.name}  ${dAz >= 0 ? '+' : ''}${dAz.toFixed(1)}°  (tap again to refine)`);
+}
 function setFov(f) { camera.fov = Math.max(20, Math.min(110, f)); camera.updateProjectionMatrix(); $('fov').value = Math.round(camera.fov); }
 
 // ---------- render loop ----------
@@ -543,6 +575,7 @@ $('mode').addEventListener('click', async () => {
     addEventListener('deviceorientationabsolute', onDevOriAbs, true);
     addEventListener('deviceorientation', onDevOriRel, true);
     state.useDevice = true; $('mode').textContent = 'view: auto ⇄'; $('mode').classList.add('on');
+    toast('tap a bright star or planet to fix the aim');
   } else {
     state.useDevice = false; $('mode').textContent = 'view: manual ⇄'; $('mode').classList.remove('on');
   }

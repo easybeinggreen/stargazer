@@ -101,7 +101,7 @@
     <div class="row extra">
       <span style="font-size:11px;color:#6b7a94">heading nudge</span>
       <input id="nudge" type="range" min="-180" max="180" value="0" />
-      <button id="nudge0" title="reset nudge">0</button>
+      <button id="nudge0" title="reset alignment">⟲ reset</button>
       <span id="nudgeVal" style="font-size:11px;color:#6b7a94">0°</span>
     </div>
   </div>
@@ -406,6 +406,7 @@ const _q1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5));
 let devOri = null, haveAbsolute = false;
 const _upY = new THREE.Vector3(0, 1, 0);
 const _targetQ = new THREE.Quaternion();
+const corrQ = new THREE.Quaternion();   // accumulated tap-to-align correction (both axes)
 // Android fires BOTH events with different alpha zero-points — lock onto the
 // Earth-frame (absolute) one and ignore the relative one once it appears.
 function onDevOriAbs(e) { if (e.alpha != null) { haveAbsolute = true; devOri = e; } }
@@ -418,7 +419,8 @@ function applyDevice() {
   _targetQ.setFromEuler(_euler);
   _targetQ.multiply(_q1);
   _targetQ.multiply(_q0.setFromAxisAngle(_zee, -orient));
-  _targetQ.premultiply(_q0.setFromAxisAngle(_upY, state.nudge * DEG));   // heading correction
+  _targetQ.premultiply(_q0.setFromAxisAngle(_upY, state.nudge * DEG));   // manual heading nudge
+  _targetQ.premultiply(corrQ);                                          // tap-to-align (az + alt)
   camera.quaternion.slerp(_targetQ, 0.22);                              // low-pass: kills sensor dither
 }
 
@@ -457,7 +459,6 @@ renderer.domElement.addEventListener('pointerup', e => {
   if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > 14 || performance.now() - d.t > 450) return; // was a drag
   alignToTap(e.clientX, e.clientY);
 });
-const azOf = v => Math.atan2(v.x, -v.z);   // world azimuth, roll-independent
 let toastT = 0;
 function toast(m) { showErr(m); clearTimeout(toastT); toastT = setTimeout(() => showErr(''), 2600); }
 function alignToTap(px, py) {
@@ -469,13 +470,12 @@ function alignToTap(px, py) {
   for (const L of labels) { if (L.cls !== 'star') continue; const wp = L.get(); if (wp) cands.push({ name: L.name, dir: wp.clone().normalize(), w: 1.4 }); }
   let best = null, bestScore = 1e9;
   for (const c of cands) { const s = c.dir.angleTo(tapDir) * c.w; if (s < bestScore) { bestScore = s; best = c; } }
-  if (!best || best.dir.angleTo(tapDir) > 14 * DEG) { toast('tap right on a labelled star or planet'); return; }
-  let dAz = (azOf(tapDir) - azOf(best.dir)) * RAD;
-  dAz = ((dAz + 540) % 360) - 180;
-  state.nudge = (((state.nudge + dAz) + 540) % 360) - 180;
-  $('nudge').value = Math.round(state.nudge);
-  $('nudgeVal').textContent = Math.round(state.nudge) + '°';
-  toast(`✓ aligned to ${best.name}  ${dAz >= 0 ? '+' : ''}${dAz.toFixed(1)}°  (tap again to refine)`);
+  const sep = best.dir.angleTo(tapDir);
+  if (!best || sep > 14 * DEG) { toast('tap right on a labelled star or planet'); return; }
+  // minimal rotation that carries where-we-drew-it onto where-you-tapped — fixes az AND alt in one shot
+  const rq = new THREE.Quaternion().setFromUnitVectors(tapDir.clone().normalize(), best.dir.clone().normalize());
+  corrQ.premultiply(rq);
+  toast(`✓ aligned to ${best.name}  (${(sep * RAD).toFixed(1)}° correction)`);
 }
 function setFov(f) { camera.fov = Math.max(20, Math.min(110, f)); camera.updateProjectionMatrix(); $('fov').value = Math.round(camera.fov); }
 
@@ -550,7 +550,11 @@ $('now').addEventListener('click', () => { setDtNow(); recompute(curDate()); });
 $('fov').addEventListener('input', e => setFov(+e.target.value));
 $('gain').addEventListener('input', e => { if (starMat) starMat.uniforms.uGain.value = (+e.target.value) / 100; });
 $('nudge').addEventListener('input', e => { state.nudge = +e.target.value; $('nudgeVal').textContent = state.nudge + '°'; });
-$('nudge0').addEventListener('click', () => { state.nudge = 0; $('nudge').value = 0; $('nudgeVal').textContent = '0°'; });
+$('nudge0').addEventListener('click', () => {
+  state.nudge = 0; $('nudge').value = 0; $('nudgeVal').textContent = '0°';
+  corrQ.identity();
+  toast('alignment reset');
+});
 $('lines').addEventListener('change', e => { state.showLines = e.target.checked; if (conSeg) conSeg.visible = e.target.checked; });
 $('labs').addEventListener('change', e => state.showLabels = e.target.checked);
 function setPanel(open) {

@@ -430,9 +430,10 @@ function updateSunPath(date) {
   sunPathGrp = new THREE.Group();
   const obs = new A.Observer(state.lat, state.lon, state.elev);
   const yr = date.getFullYear();
-  sunPathGrp.add(sunArc(obs, new Date(yr, 5, 21), 0xffb27a, 0.20));   // Jun solstice
-  sunPathGrp.add(sunArc(obs, new Date(yr, 11, 21), 0x8fb4dc, 0.20));  // Dec solstice
-  sunPathGrp.add(sunArc(obs, date, 0xffd27a, 0.85));                  // today
+  // faint solstice arcs = the outer envelope of the sun all year (warm = Dec, cool = Jun)
+  sunPathGrp.add(sunArc(obs, new Date(yr, 5, 21), 0x8fb4dc, 0.24));   // Jun solstice
+  sunPathGrp.add(sunArc(obs, new Date(yr, 11, 21), 0xffb27a, 0.24));  // Dec solstice
+  sunPathGrp.add(sunArc(obs, date, 0xffd27a, 0.9));                   // today (bright)
 
   // hour ticks on today's path
   const base = new Date(date); base.setHours(0, 0, 0, 0);

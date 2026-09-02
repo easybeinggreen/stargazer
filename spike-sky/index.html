@@ -89,6 +89,13 @@
       <label class="chk"><input type="checkbox" id="freeze" /> freeze</label>
       <input id="dt" type="datetime-local" step="1" />
       <button id="now">now</button>
+      <button id="play" title="loop time">▶</button>
+      <select id="playspan" title="loop length">
+        <option value="hour">hour</option>
+        <option value="day" selected>day</option>
+        <option value="month">month</option>
+        <option value="year">year</option>
+      </select>
     </div>
     <div class="row extra">
       <button id="mode">view: manual ⇄</button>
@@ -158,6 +165,7 @@ const state = {
   nudge: 0,
   showLines: true, showLabels: true, showSunPath: true,
   sunEv: {},
+  playing: false, playSpan: 'day', playT0: 0, playBaseMs: 0,
 };
 
 // ---------- coordinate transform ----------
@@ -401,7 +409,7 @@ function reprecess(date) {
 }
 
 // ---------- sun path: today's arc + seasonal extremes + rise/noon/set ----------
-let sunPathGrp = null, sunPathKey = '';
+let sunPathGrp = null, sunPathKey = '', lastSunBuild = 0;
 function sunArc(obs, dayDate, color, opacity) {
   const base = new Date(dayDate); base.setHours(0, 0, 0, 0);
   const segs = []; let cur = [];
@@ -425,6 +433,8 @@ function sunArc(obs, dayDate, color, opacity) {
 function updateSunPath(date) {
   const key = date.toISOString().slice(0, 10) + '|' + state.lat.toFixed(3) + '|' + state.lon.toFixed(3);
   if (key === sunPathKey) return;
+  if (state.playing && performance.now() - lastSunBuild < 350) return;   // don't thrash while scrubbing
+  lastSunBuild = performance.now();
   sunPathKey = key;
   if (sunPathGrp) { scene.remove(sunPathGrp); sunPathGrp.traverse(o => o.geometry && o.geometry.dispose()); }
   sunPathGrp = new THREE.Group();
@@ -636,6 +646,7 @@ function setFov(f) { camera.fov = Math.max(20, Math.min(110, f)); camera.updateP
 const _p = new THREE.Vector3();
 function frame() {
   requestAnimationFrame(frame);
+  if (state.playing && state.lat != null) recompute(curDate());
   if (state.useDevice) applyDevice();
   else { camera.rotation.y = state.yaw; camera.rotation.x = state.pitch; camera.rotation.z = 0; }
   renderer.render(scene, camera);
@@ -678,10 +689,34 @@ function renderHud() {
 }
 
 // ---------- time control ----------
-function curDate() { return (state.frozen && $('dt').value) ? new Date($('dt').value) : new Date(); }
+const SPAN_MS = { hour: 3600e3, day: 86400e3, month: 30 * 86400e3, year: 365 * 86400e3 };
+const PLAY_LOOP_MS = 15000;   // real seconds for one full loop
+function curDate() {
+  if (state.playing) {
+    const frac = ((performance.now() - state.playT0) % PLAY_LOOP_MS) / PLAY_LOOP_MS;
+    return new Date(state.playBaseMs + frac * SPAN_MS[state.playSpan]);
+  }
+  return (state.frozen && $('dt').value) ? new Date($('dt').value) : new Date();
+}
 function setDtNow() { const d = new Date(Date.now() - new Date().getTimezoneOffset()*60000); $('dt').value = d.toISOString().slice(0,19); }
-let tick = 0;
-setInterval(() => { if (state.lat != null && (!state.frozen)) recompute(curDate()); }, 1000);
+function setDtTo(d) { const l = new Date(d.getTime() - d.getTimezoneOffset()*60000); $('dt').value = l.toISOString().slice(0,19); }
+function startPlay() {
+  const anchor = curDate();
+  state.playBaseMs = (state.playSpan === 'day') ? new Date(anchor).setHours(0,0,0,0) : anchor.getTime();
+  state.playT0 = performance.now();
+  state.playing = true;
+  state.frozen = true; $('freeze').checked = true;
+  $('play').textContent = '⏸'; $('play').classList.add('on');
+}
+function stopPlay() {
+  if (!state.playing) return;
+  const landed = curDate();
+  state.playing = false;
+  $('play').textContent = '▶'; $('play').classList.remove('on');
+  setDtTo(landed);
+  recompute(landed);
+}
+setInterval(() => { if (state.lat != null && !state.frozen && !state.playing) recompute(curDate()); }, 1000);
 
 // ---------- UI wiring ----------
 $('loc').addEventListener('click', () => {
@@ -699,9 +734,11 @@ function setLoc(la, lo, el) {
 }
 $('lat').addEventListener('change', () => { const la = parseFloat($('lat').value), lo = parseFloat($('lon').value); if (isFinite(la) && isFinite(lo)) setLoc(la, lo, state.elev); });
 $('lon').addEventListener('change', () => { const la = parseFloat($('lat').value), lo = parseFloat($('lon').value); if (isFinite(la) && isFinite(lo)) setLoc(la, lo, state.elev); });
-$('freeze').addEventListener('change', e => { state.frozen = e.target.checked; if (state.frozen && !$('dt').value) setDtNow(); recompute(curDate()); });
-$('dt').addEventListener('change', () => recompute(curDate()));
-$('now').addEventListener('click', () => { setDtNow(); recompute(curDate()); });
+$('freeze').addEventListener('change', e => { stopPlay(); state.frozen = e.target.checked; if (state.frozen && !$('dt').value) setDtNow(); recompute(curDate()); });
+$('dt').addEventListener('change', () => { stopPlay(); recompute(curDate()); });
+$('now').addEventListener('click', () => { stopPlay(); setDtNow(); recompute(curDate()); });
+$('play').addEventListener('click', () => state.playing ? stopPlay() : startPlay());
+$('playspan').addEventListener('change', e => { state.playSpan = e.target.value; if (state.playing) startPlay(); });
 $('fov').addEventListener('input', e => setFov(+e.target.value));
 $('gain').addEventListener('input', e => { if (starMat) starMat.uniforms.uGain.value = (+e.target.value) / 100; });
 $('nudge').addEventListener('input', e => { state.nudge = +e.target.value; $('nudgeVal').textContent = state.nudge + '°'; });

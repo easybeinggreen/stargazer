@@ -562,6 +562,18 @@ renderer.domElement.addEventListener('pointerup', e => {
 });
 let toastT = 0;
 function toast(m) { showErr(m); clearTimeout(toastT); toastT = setTimeout(() => showErr(''), 2600); }
+const _ident = new THREE.Quaternion();
+// carry `fromDir` (where we drew it) onto `toDir` (where it really is). Rejects wild corrections
+// and never lets the accumulated correction grow into garbage.
+function applyCorrection(fromDir, toDir, label) {
+  const rq = new THREE.Quaternion().setFromUnitVectors(fromDir.clone().normalize(), toDir.clone().normalize());
+  const step = rq.angleTo(_ident) * RAD;
+  if (step > 12) { toast(`that doesn't look like ${label} — tap it directly`); return false; }
+  corrQ.premultiply(rq);
+  if (corrQ.angleTo(_ident) * RAD > 16) { corrQ.identity(); corrQ.premultiply(rq); }  // don't accumulate junk
+  toast(`✓ aligned to ${label}  (${step.toFixed(1)}°)`);
+  return true;
+}
 function alignToTap(px, py) {
   _v2.set((px / innerWidth) * 2 - 1, -(py / innerHeight) * 2 + 1);
   _rc.setFromCamera(_v2, camera);
@@ -571,12 +583,8 @@ function alignToTap(px, py) {
   for (const L of labels) { if (L.cls !== 'star') continue; const wp = L.get(); if (wp) cands.push({ name: L.name, dir: wp.clone().normalize(), w: 1.4 }); }
   let best = null, bestScore = 1e9;
   for (const c of cands) { const s = c.dir.angleTo(tapDir) * c.w; if (s < bestScore) { bestScore = s; best = c; } }
-  const sep = best.dir.angleTo(tapDir);
-  if (!best || sep > 14 * DEG) { toast('tap right on a labelled star or planet'); return; }
-  // minimal rotation that carries where-we-drew-it onto where-you-tapped — fixes az AND alt in one shot
-  const rq = new THREE.Quaternion().setFromUnitVectors(tapDir.clone().normalize(), best.dir.clone().normalize());
-  corrQ.premultiply(rq);
-  toast(`✓ aligned to ${best.name}  (${(sep * RAD).toFixed(1)}° correction)`);
+  if (!best || best.dir.angleTo(tapDir) > 14 * DEG) { toast('tap right on a labelled star or planet'); return; }
+  applyCorrection(tapDir, best.dir, best.name);
 }
 
 // ---------- camera-image lock: find the Moon / a bright planet in the video and snap to it ----------
@@ -588,18 +596,20 @@ function lockToImage() {
   const vid = $('cam');
   if (!vid.videoWidth) { toast('camera not ready yet'); return; }
 
-  // choose the brightest predicted body that is up and inside the frame
+  // choose a predicted body that is well above the horizon and inside the frame
+  const sunAlt = (bodyMarks.Sun && bodyMarks.Sun._alt != null) ? bodyMarks.Sun._alt : -90;
   let target = null;
   for (const name of ['Moon', 'Venus', 'Jupiter', 'Mars', 'Saturn']) {
     const m = bodyMarks[name];
-    if (!m || !m.visible) continue;
+    if (!m || m._alt == null || m._alt < 8) continue;                  // must be clear of rooflines
+    if (name !== 'Moon' && sunAlt > -8) continue;                       // planets need a dark sky to lock onto
     _pl.copy(m.position).project(camera);
-    if (_pl.z < 1 && Math.abs(_pl.x) < 0.92 && Math.abs(_pl.y) < 0.92) {
+    if (_pl.z < 1 && Math.abs(_pl.x) < 0.9 && Math.abs(_pl.y) < 0.9) {
       target = { name, dir: m.position.clone().normalize(), ndc: _pl.clone() };
       break;
     }
   }
-  if (!target) { toast('point roughly at the Moon or a bright planet first'); return; }
+  if (!target) { toast('point at the Moon or a bright planet that\'s well up in a dark sky'); return; }
 
   // draw the frame into a small canvas at screen aspect + cover crop (px map linearly to screen)
   const SW = 320, SH = Math.max(2, Math.round(320 * innerHeight / innerWidth));
@@ -631,12 +641,18 @@ function lockToImage() {
     }
   const bx = sw2 ? sx / sw2 : mx, by = sw2 ? sy / sw2 : my;
 
-  // blob pixel -> world ray -> correction that carries the marker onto it
+  // reject a blob below the in-frame horizon at the target's bearing — that's a ground light
+  const azDeg = Math.atan2(target.dir.x, -target.dir.z) * RAD;
+  const horV = new THREE.Vector3(); altAzToVec(0, azDeg, horV);
+  _pl.copy(horV).project(camera);
+  const horY = (-_pl.y * 0.5 + 0.5) * SH;
+  if (by > horY + SH * 0.03) { toast(`that looks like a ground light, not ${target.name}`); return; }
+
+  // blob pixel -> world ray -> guarded correction
   _v2.set((bx / SW) * 2 - 1, -((by / SH) * 2 - 1));
   _rc.setFromCamera(_v2, camera);
   const blobDir = _rc.ray.direction.clone().normalize();
-  corrQ.premultiply(new THREE.Quaternion().setFromUnitVectors(blobDir, target.dir));
-  toast(`🌙 locked on ${target.name}`);
+  if (applyCorrection(blobDir, target.dir, target.name)) toast(`🌙 locked on ${target.name}`);
 }
 $('lockBtn').addEventListener('click', lockToImage);
 
@@ -680,10 +696,12 @@ function renderHud() {
   const va = viewAzAlt();
   const m = bodyMarks.Moon, s = bodyMarks.Saturn;
   const d = state.lastDate || new Date();
+  const corr = state.useDevice ? corrQ.angleTo(_ident) * RAD : 0;
   $('hud').innerHTML =
     `${state.lat.toFixed(3)}, ${state.lon.toFixed(3)} · ${d.toISOString().slice(0,19)}Z` +
     (state.frozen ? ' (frozen)' : '') + `<br>` +
     `view az ${va.az.toFixed(0)}° alt ${va.alt.toFixed(0)}° · fov ${camera.fov.toFixed(0)}°` +
+    (corr > 2 ? ` · <span style="color:${corr > 10 ? '#ff9a9a' : '#8fb0d8'}">align ${corr.toFixed(0)}° (⟲ resets)</span>` : '') +
     (m && m._alt > -5 ? `<br>Moon az ${m._az.toFixed(1)}° alt ${m._alt.toFixed(1)}°` : '') +
     (s && s._alt > -5 ? ` · Saturn az ${s._az.toFixed(1)}° alt ${s._alt.toFixed(1)}°` : '');
 }

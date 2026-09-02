@@ -19,6 +19,7 @@
   .lbl.planet { color: #ffe0a3; font-weight: 600; }
   .lbl.moon { color: #fff; font-weight: 600; }
   .lbl.sun { color: #ffd27a; font-weight: 700; }
+  .lbl.sunev { color: #ffce85; font-weight: 600; font-size: 10px; }
   .lbl.card { color: #7fd8b0; font-weight: 700; font-size: 13px; letter-spacing: .05em; }
   .lbl .dot { opacity: .5; }
 
@@ -95,6 +96,7 @@
       <button id="fsBtn">fullscreen ⤢</button>
       <label class="chk"><input type="checkbox" id="lines" checked /> constellations</label>
       <label class="chk"><input type="checkbox" id="labs" checked /> labels</label>
+      <label class="chk"><input type="checkbox" id="sunpath" checked /> sun path</label>
     </div>
     <div class="row extra">
       <span style="font-size:11px;color:#6b7a94">FOV</span>
@@ -154,7 +156,8 @@ const state = {
   useDevice: false, camOn: false, frozen: false,
   yaw: Math.PI, pitch: 18 * DEG,   // start facing ~North, tilted up
   nudge: 0,
-  showLines: true, showLabels: true,
+  showLines: true, showLabels: true, showSunPath: true,
+  sunEv: {},
 };
 
 // ---------- coordinate transform ----------
@@ -287,12 +290,23 @@ function buildHorizon() {
   scene.add(disc);
 }
 
+function glowTexture(inner, mid) {
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const g = c.getContext('2d');
+  const rg = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  rg.addColorStop(0, inner); rg.addColorStop(0.28, mid); rg.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = rg; g.fillRect(0, 0, 64, 64);
+  return new THREE.CanvasTexture(c);
+}
 function buildBodies() {
+  const sunTex = glowTexture('rgba(255,246,220,1)', 'rgba(255,210,120,0.85)');
   for (const b of BODIES) {
     const isSun = b === 'Sun', isMoon = b === 'Moon';
-    const col = isSun ? 0xffd27a : isMoon ? 0xffffff : 0xffe0a3;
-    const sz = isSun || isMoon ? 3.2 : 1.6;
-    const spr = new THREE.Sprite(new THREE.SpriteMaterial({ color: col, transparent: true, opacity: 0.95, depthWrite: false }));
+    const mat = isSun
+      ? new THREE.SpriteMaterial({ map: sunTex, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending })
+      : new THREE.SpriteMaterial({ color: isMoon ? 0xffffff : 0xffe0a3, transparent: true, opacity: 0.95, depthWrite: false });
+    const spr = new THREE.Sprite(mat);
+    const sz = isSun ? 9 : isMoon ? 3.4 : 1.6;
     spr.scale.set(sz, sz, 1);
     scene.add(spr);
     bodyMarks[b] = spr;
@@ -315,6 +329,9 @@ function buildLabels() {
   }
   for (const b of BODIES) mkLabel(b, b === 'Sun' ? 'sun' : b === 'Moon' ? 'moon' : 'planet',
     () => bodyMarks[b].visible ? bodyMarks[b].position : null);
+  // sun path events (text updates each recompute)
+  for (const k of ['rise', 'noon', 'set'])
+    mkLabel('', 'sunev', () => (state.showSunPath && state.sunEv[k]) ? state.sunEv[k] : null);
   // bright named stars
   const tmp = STAR.map((s, i) => ({ s, i })).filter(o => o.s.name && o.s.mag < 2.6)
     .sort((a, b) => a.s.mag - b.s.mag).slice(0, 90);
@@ -367,12 +384,13 @@ function recompute(date) {
       const eq = A.Equator(A.Body[b], date, obs, true, true);
       const h = A.Horizon(date, obs, eq.ra, eq.dec, 'normal');
       altAzToVec(h.altitude, h.azimuth, bodyMarks[b].position);
-      bodyMarks[b].visible = h.altitude > -2 && !(b === 'Sun');   // keep Sun sprite hidden, still drives sky colour
+      bodyMarks[b].visible = h.altitude > -2;
       if (b === 'Sun') sunAlt = h.altitude;
       bodyMarks[b]._alt = h.altitude; bodyMarks[b]._az = h.azimuth;
     } catch (e) { bodyMarks[b].visible = false; }
   }
   applySky(sunAlt);
+  updateSunPath(date);
   state.lastDate = date;
 }
 
@@ -380,6 +398,73 @@ function reprecess(date) {
   // Of-date star coords are computed once at load. Precession drift over a session (even months)
   // is < ~0.05°, well below the magnetometer error that dominates AR. Just move the marker.
   state.ofDate = date;
+}
+
+// ---------- sun path: today's arc + seasonal extremes + rise/noon/set ----------
+let sunPathGrp = null, sunPathKey = '';
+function sunArc(obs, dayDate, color, opacity) {
+  const base = new Date(dayDate); base.setHours(0, 0, 0, 0);
+  const segs = []; let cur = [];
+  for (let m = 0; m <= 1440; m += 6) {
+    const t = new Date(base.getTime() + m * 60000);
+    const eq = A.Equator(A.Body.Sun, t, obs, true, true);
+    const h = A.Horizon(t, obs, eq.ra, eq.dec, 'normal');
+    if (h.altitude > -1) { const v = new THREE.Vector3(); altAzToVec(h.altitude, h.azimuth, v); cur.push(v); }
+    else if (cur.length) { segs.push(cur); cur = []; }
+  }
+  if (cur.length) segs.push(cur);
+  const grp = new THREE.Group();
+  for (const seg of segs) {
+    if (seg.length < 2) continue;
+    const l = new THREE.Line(new THREE.BufferGeometry().setFromPoints(seg),
+      new THREE.LineBasicMaterial({ color, transparent: true, opacity }));
+    l.frustumCulled = false; grp.add(l);
+  }
+  return grp;
+}
+function updateSunPath(date) {
+  const key = date.toISOString().slice(0, 10) + '|' + state.lat.toFixed(3) + '|' + state.lon.toFixed(3);
+  if (key === sunPathKey) return;
+  sunPathKey = key;
+  if (sunPathGrp) { scene.remove(sunPathGrp); sunPathGrp.traverse(o => o.geometry && o.geometry.dispose()); }
+  sunPathGrp = new THREE.Group();
+  const obs = new A.Observer(state.lat, state.lon, state.elev);
+  const yr = date.getFullYear();
+  sunPathGrp.add(sunArc(obs, new Date(yr, 5, 21), 0xffb27a, 0.20));   // Jun solstice
+  sunPathGrp.add(sunArc(obs, new Date(yr, 11, 21), 0x8fb4dc, 0.20));  // Dec solstice
+  sunPathGrp.add(sunArc(obs, date, 0xffd27a, 0.85));                  // today
+
+  // hour ticks on today's path
+  const base = new Date(date); base.setHours(0, 0, 0, 0);
+  const tp = [];
+  for (let hr = 0; hr < 24; hr++) {
+    const t = new Date(base.getTime() + hr * 3600000);
+    const eq = A.Equator(A.Body.Sun, t, obs, true, true);
+    const h = A.Horizon(t, obs, eq.ra, eq.dec, 'normal');
+    if (h.altitude > 0) { const v = new THREE.Vector3(); altAzToVec(h.altitude, h.azimuth, v); tp.push(v.x, v.y, v.z); }
+  }
+  if (tp.length) {
+    const tg = new THREE.BufferGeometry();
+    tg.setAttribute('position', new THREE.Float32BufferAttribute(tp, 3));
+    sunPathGrp.add(new THREE.Points(tg, new THREE.PointsMaterial({
+      color: 0xffe8b0, size: 4 * Math.min(devicePixelRatio, 2), sizeAttenuation: false, transparent: true, opacity: 0.9,
+    })));
+  }
+  sunPathGrp.visible = state.showSunPath;
+  scene.add(sunPathGrp);
+
+  // rise / solar noon / set
+  const fmt = d => d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  const atSun = (d, lo) => { const eq = A.Equator(A.Body.Sun, d, obs, true, true); const h = A.Horizon(d, obs, eq.ra, eq.dec, 'normal'); const v = new THREE.Vector3(); altAzToVec(Math.max(h.altitude, lo), h.azimuth, v); return { v, alt: h.altitude }; };
+  state.sunEv = {};
+  try {
+    const rise = A.SearchRiseSet(A.Body.Sun, obs, +1, base, 2);
+    const set = A.SearchRiseSet(A.Body.Sun, obs, -1, base, 2);
+    const noon = A.SearchHourAngle(A.Body.Sun, obs, 0, base, +1);
+    if (rise) state.sunEv.rise = { pos: atSun(rise.date, 0.6).v, text: '☀ rise ' + fmt(rise.date) };
+    if (set)  state.sunEv.set  = { pos: atSun(set.date, 0.6).v,  text: '☀ set ' + fmt(set.date) };
+    if (noon) { const n = atSun(noon.time.date, 0.6); state.sunEv.noon = { pos: n.v, text: 'noon ' + fmt(noon.time.date) + ' · ' + n.alt.toFixed(0) + '°' }; }
+  } catch (e) { /* polar day/night etc. */ }
 }
 
 // ---------- sky colour ----------
@@ -560,8 +645,10 @@ function frame() {
   else {
     const W = innerWidth, H = innerHeight;
     for (const L of labels) {
-      const wp = L.get();
-      if (!wp) { L.el.style.display = 'none'; continue; }
+      const r = L.get();
+      if (!r) { L.el.style.display = 'none'; continue; }
+      let wp = r;
+      if (!r.isVector3) { wp = r.pos; if (r.text != null && L.el.textContent !== r.text) L.el.textContent = r.text; }
       _p.copy(wp).project(camera);
       if (_p.z > 1 || _p.x < -1.05 || _p.x > 1.05 || _p.y < -1.05 || _p.y > 1.05) { L.el.style.display = 'none'; continue; }
       L.el.style.display = 'block';
@@ -623,6 +710,7 @@ $('nudge0').addEventListener('click', () => {
   toast('alignment reset');
 });
 $('lines').addEventListener('change', e => { state.showLines = e.target.checked; if (conSeg) conSeg.visible = e.target.checked; });
+$('sunpath').addEventListener('change', e => { state.showSunPath = e.target.checked; if (sunPathGrp) sunPathGrp.visible = e.target.checked; });
 $('labs').addEventListener('change', e => state.showLabels = e.target.checked);
 function setPanel(open) {
   $('panel').classList.toggle('hidden', !open);
@@ -727,19 +815,22 @@ function captureShot() {
     // label layer
     ctx.textBaseline = 'middle';
     const colFor = c => c === 'card' ? '#7fd8b0' : c === 'planet' ? '#ffe0a3'
-      : c === 'moon' ? '#ffffff' : c === 'sun' ? '#ffd27a' : '#cfe0ff';
+      : c === 'moon' ? '#ffffff' : c === 'sun' || c === 'sunev' ? '#ffd27a' : '#cfe0ff';
     for (const L of labels) {
-      const wp = L.get(); if (!wp) continue;
+      const r = L.get(); if (!r) continue;
+      const wp = r.isVector3 ? r : r.pos;
+      const txt = r.isVector3 ? L.name : (r.text || '');
+      if (!txt) continue;
       _p.copy(wp).project(camera);
       if (_p.z > 1 || Math.abs(_p.x) > 1 || Math.abs(_p.y) > 1) continue;
       const x = (_p.x * 0.5 + 0.5) * W, y = (-_p.y * 0.5 + 0.5) * H;
       ctx.font = `600 ${(L.cls === 'card' ? 13 : 11) * dpr}px system-ui, -apple-system, sans-serif`;
       const tx = x + (L.cls === 'card' ? 0 : 7 * dpr);
-      if (L.cls === 'card') ctx.textAlign = 'center'; else ctx.textAlign = 'left';
+      ctx.textAlign = L.cls === 'card' ? 'center' : 'left';
       ctx.lineWidth = 3 * dpr; ctx.strokeStyle = 'rgba(0,0,0,.85)';
-      ctx.strokeText(L.name, tx, y);
+      ctx.strokeText(txt, tx, y);
       ctx.fillStyle = colFor(L.cls);
-      ctx.fillText(L.name, tx, y);
+      ctx.fillText(txt, tx, y);
     }
     ctx.textAlign = 'left';
 
